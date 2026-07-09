@@ -130,6 +130,18 @@ mod tests {
         assert!(err.contains("is not a directory"));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn resolve_root_rejects_a_dangling_symlink() {
+        let scratch = ScratchDir::new("dangling-symlink");
+        let missing_target = scratch.path().join("this-target-should-not-exist");
+        let link = scratch.path().join("link-to-missing");
+        std::os::unix::fs::symlink(&missing_target, &link).expect("should create the symlink");
+
+        let err = resolve_root(&link).expect_err("a dangling symlink should be rejected");
+        assert!(err.contains("could not be resolved"));
+    }
+
     #[test]
     fn generate_session_token_is_unique_each_call() {
         let a = generate_session_token();

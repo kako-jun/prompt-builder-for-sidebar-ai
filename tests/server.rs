@@ -123,6 +123,22 @@ async fn router_returns_405_for_a_non_get_method_on_the_valid_token() {
 }
 
 #[tokio::test]
+async fn router_returns_200_for_a_head_request_on_the_valid_token() {
+    // axum/tower's `get` routes implicitly also serve HEAD, so a HEAD request
+    // to the valid token path should succeed like GET does, not fall through
+    // to the 405 handling exercised by the POST test above.
+    let (addr, token, server) = spawn_test_server().await;
+
+    let response = request(addr, "HEAD", &format!("/{token}")).await;
+    assert!(
+        response.starts_with("HTTP/1.1 200"),
+        "expected 200 for a HEAD request on the valid token path, got: {response}"
+    );
+
+    server.abort();
+}
+
+#[tokio::test]
 async fn router_returns_404_for_an_uppercased_token() {
     let (addr, token, server) = spawn_test_server().await;
 
