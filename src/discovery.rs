@@ -202,8 +202,16 @@ fn is_probably_binary(path: &Path) -> std::io::Result<bool> {
 /// Baseline, non-exhaustive check for file names that commonly hold
 /// secrets. Matching files are flagged via `likely_secret`, not excluded;
 /// hardening this list further is out of scope here (see issue #9).
+///
+/// All three checks below are case-insensitive: `likely_secret` exists to
+/// warn before a secret is fed into an AI prompt, and a missed match (false
+/// negative) is worse than an over-eager one, so `ID_RSA`, `.ENV`, and
+/// `CERT.PEM` are flagged exactly like their lowercase spellings.
 fn looks_like_secret(path: &Path) -> bool {
-    let Some(file_name) = path.file_name().map(|name| name.to_string_lossy()) else {
+    let Some(file_name) = path
+        .file_name()
+        .map(|name| name.to_string_lossy().to_lowercase())
+    else {
         return false;
     };
 
@@ -211,12 +219,15 @@ fn looks_like_secret(path: &Path) -> bool {
         return true;
     }
 
-    if LIKELY_SECRET_EXACT_NAMES.contains(&file_name.as_ref()) {
+    if LIKELY_SECRET_EXACT_NAMES.contains(&file_name.as_str()) {
         return true;
     }
 
-    if let Some(extension) = path.extension().map(|ext| ext.to_string_lossy()) {
-        if LIKELY_SECRET_EXTENSIONS.contains(&extension.to_lowercase().as_str()) {
+    if let Some(extension) = path
+        .extension()
+        .map(|ext| ext.to_string_lossy().to_lowercase())
+    {
+        if LIKELY_SECRET_EXTENSIONS.contains(&extension.as_str()) {
             return true;
         }
     }
@@ -489,12 +500,12 @@ mod tests {
     }
 
     #[test]
-    fn does_not_flag_uppercase_env_or_exact_name_variants() {
-        // Known, inconsistent behavior (reported, not fixed here): unlike
-        // the extension check, `.env`/`.env.*` and the
-        // LIKELY_SECRET_EXACT_NAMES list are matched case-sensitively, so
-        // these uppercase variants slip through unflagged. Whether to widen
-        // the check is a review/kako-jun decision, not made in this test.
+    fn flags_uppercase_env_and_exact_name_variants_case_insensitively() {
+        // All three `looks_like_secret` checks (the `.env*` prefix check,
+        // the exact-name list, and the extension list) are case-insensitive,
+        // matching the existing `flags_secret_extension_case_insensitively`
+        // behavior: a missed secret (false negative) is worse than an
+        // over-eager flag, so uppercase variants must still be flagged.
         let scratch = ScratchDir::new("uppercase-secret-variants");
         let root = scratch.path();
         fs::write(root.join(".ENV"), "SECRET=1").unwrap();
@@ -510,9 +521,9 @@ mod tests {
                 .likely_secret
         };
 
-        assert!(!secret_flag(".ENV"));
-        assert!(!secret_flag("ID_RSA"));
-        assert!(!secret_flag(".NPMRC"));
+        assert!(secret_flag(".ENV"));
+        assert!(secret_flag("ID_RSA"));
+        assert!(secret_flag(".NPMRC"));
     }
 
     #[test]
