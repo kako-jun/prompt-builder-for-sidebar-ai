@@ -38,6 +38,10 @@ Each entry has a `/`-separated `path` relative to the root, `is_dir`, and
 - Symlinks of any kind (files or directories). Symlinks are never followed
   and never listed, so a symlink cannot be used to read or list anything
   outside the selected root.
+- Non-regular files: named pipes (FIFOs), character/block devices, sockets,
+  and anything else that is neither a directory nor a regular file. These
+  are skipped without ever being opened, since opening one (e.g. a FIFO
+  with no writer on the other end) can block indefinitely.
 - Files that look binary: if a NUL byte appears in the first ~8000 bytes,
   the file is treated as binary and skipped. Files that can't be read (e.g.
   a permission error) are skipped the same way rather than failing the
@@ -45,6 +49,12 @@ Each entry has a `/`-separated `path` relative to the root, `is_dir`, and
 
 Ordinary dotfiles and dotdirs (e.g. `.github`) are **not** excluded by
 default; only `.gitignore` patterns and the baseline list above apply.
+
+Binary detection is evaluated before the secret-file check below, so a
+binary-format key file (`.pfx`/`.p12`/`.jks`, ...) is excluded outright as
+binary and never gets a chance to be flagged as `likely_secret`. This is
+considered to satisfy the "exclude" arm of issue #3's acceptance criterion
+("Exclude or visibly flag likely secret files").
 
 ### Secret files are flagged, not hidden
 
