@@ -2,11 +2,14 @@ use axum::{http::StatusCode, response::Html, response::IntoResponse, routing::ge
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
+pub mod discovery;
+
 /// Minimal HTML shell embedded in the binary.
 ///
-/// File discovery, the explorer UI, code rendering, and prompt generation
-/// are out of scope for this scaffold (see issue #2); they land in later
-/// issues.
+/// The explorer UI, code rendering, and prompt generation are out of scope
+/// for this scaffold; they land in later issues. File discovery itself is
+/// implemented in the `discovery` module (see `discovery::discover_tree`);
+/// wiring it into the router lands in a follow-up change.
 const INDEX_HTML: &str = include_str!("../assets/index.html");
 
 /// Resolves and validates the root directory passed on the command line.
