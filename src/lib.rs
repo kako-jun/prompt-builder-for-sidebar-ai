@@ -84,10 +84,122 @@ mod tests {
     }
 
     #[test]
+    fn resolve_root_rejects_an_empty_path() {
+        let err = resolve_root(Path::new("")).expect_err("an empty path should be rejected");
+        assert!(err.contains("could not be resolved"));
+    }
+
+    #[test]
+    fn resolve_root_accepts_a_non_ascii_directory_name() {
+        let scratch = ScratchDir::new("non-ascii");
+        let target = scratch.path().join("日本語ディレクトリ");
+        std::fs::create_dir(&target).expect("should create the non-ascii directory");
+
+        let resolved = resolve_root(&target).expect("a non-ascii directory should resolve");
+        assert!(resolved.is_dir());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_root_resolves_a_symlink_to_a_directory() {
+        let scratch = ScratchDir::new("symlink-dir");
+        let real_dir = scratch.path().join("real");
+        std::fs::create_dir(&real_dir).expect("should create the real directory");
+        let link = scratch.path().join("link-to-real");
+        std::os::unix::fs::symlink(&real_dir, &link).expect("should create the symlink");
+
+        let resolved = resolve_root(&link).expect("a symlink to a directory should resolve");
+        assert_eq!(
+            resolved,
+            real_dir
+                .canonicalize()
+                .expect("real dir should canonicalize")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_root_rejects_a_symlink_to_a_file() {
+        let scratch = ScratchDir::new("symlink-file");
+        let real_file = scratch.path().join("real.txt");
+        std::fs::write(&real_file, b"contents").expect("should create the real file");
+        let link = scratch.path().join("link-to-file");
+        std::os::unix::fs::symlink(&real_file, &link).expect("should create the symlink");
+
+        let err = resolve_root(&link).expect_err("a symlink to a file should be rejected");
+        assert!(err.contains("is not a directory"));
+    }
+
+    #[test]
     fn generate_session_token_is_unique_each_call() {
         let a = generate_session_token();
         let b = generate_session_token();
         assert_ne!(a, b);
         assert!(!a.is_empty());
+    }
+
+    #[test]
+    fn generate_session_token_matches_uuid_v4_format() {
+        let token = generate_session_token();
+
+        assert_eq!(
+            token.len(),
+            36,
+            "token should be the canonical 36-char UUID length: {token}"
+        );
+
+        let groups: Vec<&str> = token.split('-').collect();
+        assert_eq!(
+            groups.iter().map(|g| g.len()).collect::<Vec<_>>(),
+            vec![8, 4, 4, 4, 12],
+            "token should have the 8-4-4-4-12 UUID grouping: {token}"
+        );
+        assert!(
+            groups.iter().all(|g| g
+                .chars()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())),
+            "every group should be lowercase hex digits: {token}"
+        );
+        assert_eq!(
+            groups[2].chars().next(),
+            Some('4'),
+            "UUID version nibble should be 4 (v4): {token}"
+        );
+        let variant_nibble = groups[3].chars().next().expect("group should be non-empty");
+        assert!(
+            matches!(variant_nibble, '8' | '9' | 'a' | 'b'),
+            "UUID variant nibble should be one of 8/9/a/b (RFC 4122): {token}"
+        );
+    }
+
+    /// A directory under the OS temp dir that is removed on drop, so tests
+    /// can exercise `resolve_root`'s filesystem-touching branches (non-ASCII
+    /// names, symlinks) without adding a `tempfile` dependency.
+    struct ScratchDir(PathBuf);
+
+    impl ScratchDir {
+        fn new(name_hint: &str) -> Self {
+            let unique = format!(
+                "prompt-builder-resolve-root-{name_hint}-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .expect("system clock should be after the epoch")
+                    .as_nanos()
+            );
+            let path = std::env::temp_dir().join(unique);
+            std::fs::create_dir_all(&path).expect("should create a scratch directory");
+            ScratchDir(path)
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for ScratchDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
     }
 }
