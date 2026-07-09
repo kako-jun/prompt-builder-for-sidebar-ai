@@ -381,4 +381,376 @@ mod tests {
         assert!(paths.contains(&"real.txt"));
         assert!(!paths.contains(&"link.txt"));
     }
+
+    #[test]
+    fn respects_nested_gitignore_in_subdirectory() {
+        let scratch = ScratchDir::new("nested-gitignore");
+        let root = scratch.path();
+        fs::create_dir(root.join("sub")).unwrap();
+        fs::write(root.join("sub/.gitignore"), "ignored.txt\n").unwrap();
+        fs::write(root.join("sub/ignored.txt"), "ignored in sub").unwrap();
+        fs::write(root.join("sub/kept.txt"), "kept in sub").unwrap();
+        // Same file name at root: the sub/.gitignore pattern must not reach
+        // outside the directory it lives in.
+        fs::write(root.join("ignored.txt"), "kept at root").unwrap();
+
+        let entries = discover_tree(root);
+        let paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
+
+        assert!(paths.contains(&"sub/kept.txt"));
+        assert!(!paths.contains(&"sub/ignored.txt"));
+        assert!(
+            paths.contains(&"ignored.txt"),
+            "root-level file with the same name should be unaffected by the nested .gitignore: {paths:?}"
+        );
+    }
+
+    #[test]
+    fn respects_gitignore_negation_pattern() {
+        let scratch = ScratchDir::new("gitignore-negation");
+        let root = scratch.path();
+        fs::write(root.join(".gitignore"), "*.log\n!keep.log\n").unwrap();
+        fs::write(root.join("debug.log"), "debug").unwrap();
+        fs::write(root.join("keep.log"), "keep").unwrap();
+
+        let entries = discover_tree(root);
+        let paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
+
+        assert!(!paths.contains(&"debug.log"));
+        assert!(paths.contains(&"keep.log"));
+    }
+
+    #[test]
+    fn baseline_excluded_dir_is_not_restored_by_gitignore_negation() {
+        let scratch = ScratchDir::new("baseline-vs-negation");
+        let root = scratch.path();
+        // A `!node_modules` negation is a plausible thing for a project to
+        // add to its .gitignore; the baseline safety exclusion must still
+        // win, since it is not implemented via the gitignore matcher.
+        fs::write(root.join(".gitignore"), "!node_modules\n").unwrap();
+        fs::create_dir(root.join("node_modules")).unwrap();
+        fs::write(root.join("node_modules/pkg.js"), "irrelevant").unwrap();
+        fs::write(root.join("kept.txt"), "kept").unwrap();
+
+        let entries = discover_tree(root);
+        let paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
+
+        assert!(paths.contains(&"kept.txt"));
+        assert!(
+            !paths.contains(&"node_modules") && !paths.contains(&"node_modules/pkg.js"),
+            "baseline exclusion should not be overridden by a .gitignore negation: {paths:?}"
+        );
+    }
+
+    #[test]
+    fn file_named_like_baseline_dir_is_not_excluded() {
+        let scratch = ScratchDir::new("file-named-like-baseline-dir");
+        let root = scratch.path();
+        // "target" is a baseline-excluded *directory* name; a plain file
+        // that happens to share the name should not be swept up, since the
+        // baseline check is gated on `is_dir`.
+        fs::write(root.join("target"), "not a directory").unwrap();
+
+        let entries = discover_tree(root);
+        let paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
+
+        assert!(paths.contains(&"target"));
+    }
+
+    #[test]
+    fn flags_secret_extension_case_insensitively() {
+        let scratch = ScratchDir::new("secret-extension-case");
+        let root = scratch.path();
+        fs::write(root.join("CERT.PEM"), "not a real cert").unwrap();
+
+        let entries = discover_tree(root);
+        let entry = entries
+            .iter()
+            .find(|e| e.path == "CERT.PEM")
+            .expect("expected an entry for CERT.PEM");
+
+        assert!(entry.likely_secret);
+    }
+
+    #[test]
+    fn does_not_flag_uppercase_env_or_exact_name_variants() {
+        // Known, inconsistent behavior (reported, not fixed here): unlike
+        // the extension check, `.env`/`.env.*` and the
+        // LIKELY_SECRET_EXACT_NAMES list are matched case-sensitively, so
+        // these uppercase variants slip through unflagged. Whether to widen
+        // the check is a review/kako-jun decision, not made in this test.
+        let scratch = ScratchDir::new("uppercase-secret-variants");
+        let root = scratch.path();
+        fs::write(root.join(".ENV"), "SECRET=1").unwrap();
+        fs::write(root.join("ID_RSA"), "not a real key").unwrap();
+        fs::write(root.join(".NPMRC"), "//registry").unwrap();
+
+        let entries = discover_tree(root);
+        let secret_flag = |name: &str| {
+            entries
+                .iter()
+                .find(|e| e.path == name)
+                .unwrap_or_else(|| panic!("expected an entry for {name}"))
+                .likely_secret
+        };
+
+        assert!(!secret_flag(".ENV"));
+        assert!(!secret_flag("ID_RSA"));
+        assert!(!secret_flag(".NPMRC"));
+    }
+
+    #[test]
+    fn flags_env_example_as_likely_secret() {
+        // Known behavior (reported, not fixed here): `starts_with(".env.")`
+        // flags harmless templates like `.env.example` along with real
+        // `.env.*` files. Whether to special-case template-like names is a
+        // review/kako-jun decision, not made in this test.
+        let scratch = ScratchDir::new("env-example");
+        let root = scratch.path();
+        fs::write(root.join(".env.example"), "SECRET=changeme").unwrap();
+
+        let entries = discover_tree(root);
+        let entry = entries
+            .iter()
+            .find(|e| e.path == ".env.example")
+            .expect("expected an entry for .env.example");
+
+        assert!(entry.likely_secret);
+    }
+
+    #[test]
+    fn binary_pfx_secret_file_is_silently_excluded_not_flagged() {
+        // Known inconsistency (reported, not fixed here): the binary check
+        // runs before `likely_secret` is ever computed, so a secret-looking
+        // file that is also binary is excluded outright instead of being
+        // flagged and kept, contradicting the "flag, don't hide" intent for
+        // secret files. Whether to reorder the checks is a review/kako-jun
+        // decision, not made in this test.
+        let scratch = ScratchDir::new("binary-secret");
+        let root = scratch.path();
+        fs::write(root.join("cert.pfx"), [0u8, 1, 2, 3]).unwrap();
+
+        let entries = discover_tree(root);
+        let paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
+
+        assert!(!paths.contains(&"cert.pfx"));
+    }
+
+    #[test]
+    fn empty_root_directory_returns_no_entries() {
+        let scratch = ScratchDir::new("empty-root");
+        let root = scratch.path();
+
+        let entries = discover_tree(root);
+
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn zero_byte_file_is_included_and_not_binary() {
+        let scratch = ScratchDir::new("zero-byte-file");
+        let root = scratch.path();
+        fs::write(root.join("empty.txt"), []).unwrap();
+
+        let entries = discover_tree(root);
+        let entry = entries
+            .iter()
+            .find(|e| e.path == "empty.txt")
+            .expect("expected an entry for empty.txt");
+
+        assert!(!entry.likely_secret);
+    }
+
+    /// Builds a buffer of `len` bytes, all `'a'`, with a single NUL byte at
+    /// `nul_index`, for exercising the `BINARY_SNIFF_LEN` boundary.
+    fn buffer_with_nul_at(len: usize, nul_index: usize) -> Vec<u8> {
+        let mut buffer = vec![b'a'; len];
+        buffer[nul_index] = 0;
+        buffer
+    }
+
+    #[test]
+    fn nul_just_before_sniff_window_is_detected_as_binary() {
+        // 0-indexed byte 7998 (the 7999th byte) is inside the first
+        // BINARY_SNIFF_LEN (8000) bytes read.
+        let scratch = ScratchDir::new("nul-before-window");
+        let root = scratch.path();
+        fs::write(
+            root.join("almost-binary.dat"),
+            buffer_with_nul_at(8000, 7998),
+        )
+        .unwrap();
+
+        let entries = discover_tree(root);
+        let paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
+
+        assert!(!paths.contains(&"almost-binary.dat"));
+    }
+
+    #[test]
+    fn nul_exactly_at_sniff_window_edge_is_detected_as_binary() {
+        // 0-indexed byte 7999 (the 8000th byte) is the last byte read by
+        // `take(BINARY_SNIFF_LEN)`.
+        let scratch = ScratchDir::new("nul-at-window-edge");
+        let root = scratch.path();
+        fs::write(root.join("edge-binary.dat"), buffer_with_nul_at(8000, 7999)).unwrap();
+
+        let entries = discover_tree(root);
+        let paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
+
+        assert!(!paths.contains(&"edge-binary.dat"));
+    }
+
+    #[test]
+    fn nul_just_after_sniff_window_is_not_detected_as_binary() {
+        // 0-indexed byte 8000 (the 8001st byte) falls just outside the
+        // range read by `take(BINARY_SNIFF_LEN)`, so it is not seen.
+        let scratch = ScratchDir::new("nul-after-window");
+        let root = scratch.path();
+        fs::write(root.join("not-binary.dat"), buffer_with_nul_at(8001, 8000)).unwrap();
+
+        let entries = discover_tree(root);
+        let paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
+
+        assert!(paths.contains(&"not-binary.dat"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn skips_unreadable_file_without_failing_whole_walk() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let scratch = ScratchDir::new("unreadable-file");
+        let root = scratch.path();
+        fs::write(root.join("visible.txt"), "visible").unwrap();
+        let blocked = root.join("blocked.txt");
+        fs::write(&blocked, "blocked").unwrap();
+        fs::set_permissions(&blocked, fs::Permissions::from_mode(0o000)).unwrap();
+
+        // Some CI environments run as root (or otherwise don't enforce
+        // permission bits), in which case the chmod above has no real
+        // effect. Confirm the file is actually unreadable before asserting
+        // on it; otherwise skip rather than assert a false failure.
+        if fs::File::open(&blocked).is_ok() {
+            fs::set_permissions(&blocked, fs::Permissions::from_mode(0o644)).unwrap();
+            return;
+        }
+
+        let entries = discover_tree(root);
+        let paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
+
+        assert!(paths.contains(&"visible.txt"));
+        assert!(!paths.contains(&"blocked.txt"));
+
+        // Restore permissions so ScratchDir's Drop can remove the directory.
+        fs::set_permissions(&blocked, fs::Permissions::from_mode(0o644)).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn skips_unreadable_subdirectory_but_continues_walk() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let scratch = ScratchDir::new("unreadable-subdir");
+        let root = scratch.path();
+        fs::write(root.join("before.txt"), "before").unwrap();
+        let blocked_dir = root.join("blocked_dir");
+        fs::create_dir(&blocked_dir).unwrap();
+        fs::write(blocked_dir.join("hidden.txt"), "hidden").unwrap();
+        fs::write(root.join("after.txt"), "after").unwrap();
+        fs::set_permissions(&blocked_dir, fs::Permissions::from_mode(0o000)).unwrap();
+
+        // Same root-vs-CI caveat as skips_unreadable_file_without_failing_whole_walk.
+        if fs::read_dir(&blocked_dir).is_ok() {
+            fs::set_permissions(&blocked_dir, fs::Permissions::from_mode(0o755)).unwrap();
+            return;
+        }
+
+        let entries = discover_tree(root);
+        let paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
+
+        assert!(paths.contains(&"before.txt"));
+        assert!(paths.contains(&"after.txt"));
+        assert!(!paths.contains(&"blocked_dir/hidden.txt"));
+
+        // Restore permissions so ScratchDir's Drop can remove the directory.
+        fs::set_permissions(&blocked_dir, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[test]
+    fn is_probably_binary_returns_err_for_missing_path() {
+        let scratch = ScratchDir::new("missing-path");
+        let missing = scratch.path().join("does-not-exist.txt");
+
+        let result = is_probably_binary(&missing);
+
+        assert!(
+            result.is_err(),
+            "expected an Err for a missing path, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn root_named_like_baseline_excluded_dir_is_still_served() {
+        let scratch = ScratchDir::new("root-baseline-name");
+        // The root itself is named like a baseline-excluded directory; the
+        // baseline filter only applies at depth > 0, so the root's own
+        // contents must still be served normally.
+        let root = scratch.path().join("node_modules");
+        fs::create_dir(&root).unwrap();
+        fs::write(root.join("kept.txt"), "kept").unwrap();
+
+        let entries = discover_tree(&root);
+        let paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
+
+        assert_eq!(paths, vec!["kept.txt"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn does_not_follow_double_symlink_indirection() {
+        let scratch = ScratchDir::new("double-symlink-root");
+        let outside = ScratchDir::new("double-symlink-outside");
+        fs::write(outside.path().join("secret.txt"), "outside root").unwrap();
+
+        let root = scratch.path();
+        fs::write(root.join("kept.txt"), "kept").unwrap();
+        // A symlink chain: hop1 -> hop2 -> outside directory.
+        std::os::unix::fs::symlink(outside.path(), root.join("hop2")).unwrap();
+        std::os::unix::fs::symlink(root.join("hop2"), root.join("hop1")).unwrap();
+
+        let entries = discover_tree(root);
+        let paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
+
+        assert_eq!(paths, vec!["kept.txt"]);
+    }
+
+    #[test]
+    fn discovers_files_with_non_ascii_and_special_characters() {
+        let scratch = ScratchDir::new("non-ascii-files");
+        let root = scratch.path();
+        fs::write(root.join("日本語.txt"), "japanese name").unwrap();
+        fs::write(root.join("😀ファイル.md"), "emoji name").unwrap();
+
+        let entries = discover_tree(root);
+        let paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
+
+        assert!(paths.contains(&"日本語.txt"));
+        assert!(paths.contains(&"😀ファイル.md"));
+    }
+
+    #[test]
+    fn gitignored_secret_file_never_appears_regardless_of_secret_flag() {
+        let scratch = ScratchDir::new("gitignored-secret");
+        let root = scratch.path();
+        fs::write(root.join(".gitignore"), ".env\n").unwrap();
+        fs::write(root.join(".env"), "SECRET=1").unwrap();
+
+        let entries = discover_tree(root);
+
+        assert!(
+            entries.iter().all(|e| e.path != ".env"),
+            ".env excluded by .gitignore should never appear in the tree, even flagged: {entries:?}"
+        );
+    }
 }
