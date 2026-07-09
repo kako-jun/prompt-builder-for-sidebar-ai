@@ -4,9 +4,10 @@
 //! a small set of baseline safety rules on top of it: `.git` and common
 //! dependency/build directories are always excluded even without a
 //! `.gitignore`, symlinks are never followed (so a symlink cannot be used to
-//! read or list anything outside the selected root), and files that look
-//! like secrets (`.env`, private keys, credential files, ...) are flagged
-//! rather than silently hidden.
+//! read or list anything outside the selected root), non-regular files
+//! (named pipes, device files, sockets, ...) are never opened, and files
+//! that look like secrets (`.env`, private keys, credential files, ...) are
+//! flagged rather than silently hidden.
 //!
 //! See README.md for the user-facing description of these rules and their
 //! known limitations.
@@ -77,6 +78,10 @@ pub struct FileEntry {
 ///   by a `.gitignore` in the tree.
 /// - Symlinks (of any kind), so a symlink cannot be used to read or list
 ///   anything outside `root`.
+/// - Non-regular files: named pipes (FIFOs), character/block devices,
+///   sockets, and anything else that is neither a directory nor a regular
+///   file. These are skipped without ever being opened, since opening one
+///   (e.g. a FIFO with no writer) can block indefinitely.
 /// - Files that look binary (a NUL byte in the first [`BINARY_SNIFF_LEN`]
 ///   bytes) or that cannot be read (e.g. a permission error): these are
 ///   skipped rather than causing the whole walk to fail.
@@ -142,6 +147,17 @@ pub fn discover_tree(root: &Path) -> Vec<FileEntry> {
         };
 
         let is_dir = entry.file_type().is_some_and(|ft| ft.is_dir());
+        let is_regular_file = entry.file_type().is_some_and(|ft| ft.is_file());
+
+        // Anything that is neither a directory nor a regular file (named
+        // pipes/FIFOs, character or block devices, sockets, ...) is skipped
+        // unconditionally, the same way symlinks are skipped above, without
+        // ever being opened. Opening a FIFO with no writer on the other end
+        // blocks forever, which would hang the whole request; there is no
+        // safe way to "peek" at one of these before committing to open it.
+        if !is_dir && !is_regular_file {
+            continue;
+        }
 
         if !is_dir && is_probably_binary(entry.path()).unwrap_or(true) {
             continue;
@@ -675,6 +691,51 @@ mod tests {
 
         // Restore permissions so ScratchDir's Drop can remove the directory.
         fs::set_permissions(&blocked_dir, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn does_not_hang_on_a_fifo_with_no_writer() {
+        // Opening a FIFO (named pipe) for reading blocks until a writer
+        // opens the other end. If `discover_tree` ever reached
+        // `is_probably_binary` -> `File::open` for a FIFO, a request against
+        // a directory containing one would hang forever. Run the walk on a
+        // background thread and require it to finish within a short
+        // deadline, so a regression fails this test instead of hanging the
+        // whole test binary.
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let scratch = ScratchDir::new("fifo");
+        let root = scratch.path().to_path_buf();
+        fs::write(root.join("kept.txt"), "kept").unwrap();
+
+        let fifo_path = root.join("a.fifo");
+        let status = std::process::Command::new("mkfifo")
+            .arg(&fifo_path)
+            .status()
+            .expect("the `mkfifo` command should be available on this system");
+        assert!(status.success(), "mkfifo should succeed");
+
+        let (sender, receiver) = mpsc::channel();
+        std::thread::spawn(move || {
+            let entries = discover_tree(&root);
+            // If the receiver already gave up (test failed/timed out),
+            // there is nobody left to notice a send error.
+            let _ = sender.send(entries);
+        });
+
+        let entries = receiver.recv_timeout(Duration::from_secs(5)).expect(
+            "discover_tree should not hang when the root contains a FIFO \
+             with no writer (opening it would block forever)",
+        );
+        let paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
+
+        assert!(paths.contains(&"kept.txt"));
+        assert!(
+            !paths.contains(&"a.fifo"),
+            "a FIFO should be skipped, not included in the tree: {paths:?}"
+        );
     }
 
     #[test]
