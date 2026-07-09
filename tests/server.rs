@@ -66,21 +66,7 @@ async fn spawn_test_server() -> (SocketAddr, String, JoinHandle<()>) {
 
 #[tokio::test]
 async fn session_path_responds_and_other_paths_are_rejected() {
-    let token = generate_session_token();
-    let router = build_router(&token);
-
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("should bind an available loopback port");
-    let addr = listener
-        .local_addr()
-        .expect("bound listener should have a local address");
-
-    let server = tokio::spawn(async move {
-        axum::serve(listener, router)
-            .await
-            .expect("server should run without error");
-    });
+    let (addr, token, server) = spawn_test_server().await;
 
     let session_response = get(addr, &format!("/{token}")).await;
     assert!(
