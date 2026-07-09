@@ -26,7 +26,7 @@ async fn main() -> ExitCode {
     };
 
     let token = generate_session_token();
-    let router = build_router(&token);
+    let router = build_router(&token, root.clone());
 
     let listener = match TcpListener::bind("127.0.0.1:0").await {
         Ok(listener) => listener,
