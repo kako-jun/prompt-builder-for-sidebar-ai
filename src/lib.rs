@@ -1,15 +1,20 @@
-use axum::{http::StatusCode, response::Html, response::IntoResponse, routing::get, Router};
+use axum::{
+    extract::State, http::StatusCode, response::Html, response::IntoResponse, routing::get, Json,
+    Router,
+};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use uuid::Uuid;
 
 pub mod discovery;
+
+use discovery::{discover_tree, FileEntry};
 
 /// Minimal HTML shell embedded in the binary.
 ///
 /// The explorer UI, code rendering, and prompt generation are out of scope
 /// for this scaffold; they land in later issues. File discovery itself is
-/// implemented in the `discovery` module (see `discovery::discover_tree`);
-/// wiring it into the router lands in a follow-up change.
+/// implemented in the `discovery` module and exposed via `/{token}/api/tree`.
 const INDEX_HTML: &str = include_str!("../assets/index.html");
 
 /// Resolves and validates the root directory passed on the command line.
@@ -45,17 +50,28 @@ pub fn generate_session_token() -> String {
 
 /// Builds the Axum router for a single session.
 ///
-/// Only `/{token}` responds with the HTML shell; every other path,
-/// including the bare root `/`, returns 404 so the server cannot be used
-/// without the session token.
-pub fn build_router(token: &str) -> Router {
+/// Only paths under `/{token}` are served; every other path, including the
+/// bare root `/`, returns 404 so the server cannot be used without the
+/// session token. `root` is the canonicalized directory the session was
+/// started with (see [`resolve_root`]); it is the security boundary that
+/// `/{token}/api/tree` walks via [`discovery::discover_tree`].
+pub fn build_router(token: &str, root: PathBuf) -> Router {
+    let state = Arc::new(root);
+
     Router::new()
         .route(&format!("/{token}"), get(serve_shell))
+        .route(&format!("/{token}/api/tree"), get(serve_tree))
         .fallback(not_found)
+        .with_state(state)
 }
 
 async fn serve_shell() -> impl IntoResponse {
     Html(INDEX_HTML)
+}
+
+async fn serve_tree(State(root): State<Arc<PathBuf>>) -> impl IntoResponse {
+    let entries: Vec<FileEntry> = discover_tree(&root);
+    Json(entries)
 }
 
 async fn not_found() -> impl IntoResponse {

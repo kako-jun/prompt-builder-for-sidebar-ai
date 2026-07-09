@@ -46,7 +46,8 @@ fn body_of(response: &str) -> &str {
 /// can run concurrently without interfering with each other.
 async fn spawn_test_server() -> (SocketAddr, String, JoinHandle<()>) {
     let token = generate_session_token();
-    let router = build_router(&token);
+    let root = std::env::current_dir().expect("should read the current directory");
+    let router = build_router(&token, root);
 
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
