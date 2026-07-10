@@ -1296,7 +1296,10 @@ function buildCopyActionGroup(primaryLabel, onPrimary, getMenuItems) {
   primaryButton.type = "button";
   primaryButton.className = "copy-button copy-button-primary";
   primaryButton.textContent = primaryLabel;
-  primaryButton.addEventListener("click", () => onPrimary(primaryButton));
+  primaryButton.addEventListener("click", () => {
+    closeOpenCopyMenu();
+    onPrimary(primaryButton);
+  });
   wrap.appendChild(primaryButton);
 
   const menuButton = document.createElement("button");
