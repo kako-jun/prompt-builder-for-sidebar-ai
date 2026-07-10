@@ -739,7 +739,21 @@ function handleLineClick(path, lineNumber, shiftKey) {
  * `min`/`max` of the two endpoints regardless of click order), reflects it
  * in that file panel's DOM, and -- unless `writeHash` is `false` (used when
  * a selection is being applied *from* an incoming hash, to avoid rewriting
- * the same navigation back onto itself) -- updates `location.hash` to match. */
+ * the same navigation back onto itself) -- updates the URL to match.
+ *
+ * Uses `history.replaceState` (via `writeRefToHash`) rather than assigning
+ * `window.location.hash` directly: a plain hash assignment fires a
+ * `hashchange` event, which would re-enter `handleHashNavigation` ->
+ * `revealFilePanel` for every single line click, forcing an unwanted
+ * `scrollIntoView` + `flashHighlight` on every click (a self-triggered
+ * navigation loop). `replaceState` updates
+ * `location.hash`/the address bar without firing `hashchange`, so an
+ * internal click never re-triggers its own navigation handler. It also
+ * doesn't push a new history entry, which is desirable here anyway --
+ * clicking through lines shouldn't pile up "back" entries -- while an
+ * incoming hash from a bookmark/typed URL, or the browser's own back/
+ * forward navigation, still fires `hashchange` normally and is handled by
+ * `wireHashNavigation` as before. */
 function setLineSelection(path, anchor, endpointA, endpointB, writeHash = true) {
   const start = Math.min(endpointA, endpointB);
   const end = Math.max(endpointA, endpointB);
@@ -747,8 +761,19 @@ function setLineSelection(path, anchor, endpointA, endpointB, writeHash = true) 
   updateLineSelectionDom(path);
 
   if (writeHash) {
-    window.location.hash = hashFragmentFromRef(formatLinesRef(path, start, end));
+    writeRefToHash(formatLinesRef(path, start, end));
   }
+}
+
+/** Writes `refString` to the URL as a percent-encoded fragment via
+ * `window.history.replaceState`, without pushing a new history entry and
+ * without firing `hashchange` (see `setLineSelection`'s doc comment for why
+ * that matters). Pulled out into its own exported function so this one
+ * `window`-touching statement can be unit-tested in isolation -- by
+ * stubbing `window.history.replaceState` -- without needing the DOM that
+ * the rest of `setLineSelection` (via `updateLineSelectionDom`) depends on. */
+export function writeRefToHash(refString) {
+  window.history.replaceState(null, "", "#" + hashFragmentFromRef(refString));
 }
 
 /** Applies the current `state.lineSelections` entry for `path` (if any) to

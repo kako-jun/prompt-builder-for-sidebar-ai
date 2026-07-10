@@ -19,6 +19,7 @@ import {
   hashFragmentFromRef,
   refFromHashFragment,
   nextLineSelection,
+  writeRefToHash,
 } from "./app.js";
 
 // ---- extensionOf ----
@@ -734,5 +735,64 @@ describe("nextLineSelection", () => {
     // be mistaken for extending from 10. It must still anchor on 5.
     const second = nextLineSelection(first, 2, true);
     assert.deepEqual(second, { anchor: 5, start: 2, end: 5 });
+  });
+});
+
+// ---- writeRefToHash ----
+//
+// `setLineSelection` used to assign `window.location.hash` directly, which
+// fires a `hashchange` event and re-enters the app's own navigation handler
+// on every single line click (a self-triggered scroll+flash loop). It must
+// use `window.history.replaceState` instead, which updates the URL without
+// firing `hashchange`. `writeRefToHash` isolates that one statement so it
+// can be verified here without needing a DOM: stub `window.history
+// .replaceState` and check the call, then restore the previous `window`.
+
+describe("writeRefToHash", () => {
+  test("calls window.history.replaceState (not a window.location.hash assignment) with the percent-encoded ref as the new URL fragment, without pushing a new history entry", () => {
+    const calls = [];
+    const originalWindow = global.window;
+    global.window = {
+      history: {
+        replaceState: (...args) => calls.push(args),
+      },
+    };
+
+    try {
+      writeRefToHash("@lines:src/app.js#L5-L10");
+    } finally {
+      global.window = originalWindow;
+    }
+
+    assert.equal(calls.length, 1);
+    // First arg `null` (no associated state object) and second arg `""`
+    // (unused legacy title parameter) are `replaceState`'s own signature;
+    // the third arg is the URL this call actually changes.
+    assert.deepEqual(calls[0], [null, "", `#${encodeURIComponent("@lines:src/app.js#L5-L10")}`]);
+  });
+
+  test("round-trips through refFromHashFragment back to the original ref", () => {
+    let written = null;
+    const originalWindow = global.window;
+    global.window = {
+      history: {
+        replaceState: (_state, _title, url) => {
+          written = url;
+        },
+      },
+    };
+
+    try {
+      writeRefToHash("@lines:notes#1.md#L3");
+    } finally {
+      global.window = originalWindow;
+    }
+
+    assert.deepEqual(refFromHashFragment(written.slice(1)), {
+      kind: "lines",
+      path: "notes#1.md",
+      start: 3,
+      end: 3,
+    });
   });
 });
