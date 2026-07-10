@@ -1114,6 +1114,201 @@ function flashHighlight(element) {
   }, NAV_FLASH_MS);
 }
 
+// ---- Copy actions (clipboard) ----
+//
+// Every copy affordance in the UI (a file panel's "Copy" button and its "⋯"
+// menu, a tree directory row's hover copy icon, the global toolbar's "Copy
+// all checked" button and its "⋯" menu) funnels through the same two
+// pieces here -- `copyTextToClipboard` (the actual clipboard write) and
+// `flashCopyFeedback` (the transient on-button "Copied!"/"Copy failed" cue)
+// -- so success and failure always look and behave the same everywhere.
+
+const COPY_FEEDBACK_MS = 1500;
+
+/** Writes `text` to the system clipboard via the async Clipboard API,
+ * returning `{ ok: true }` on success or `{ ok: false, error }` on failure
+ * (no Clipboard API in this context, an insecure origin, a denied
+ * permission, etc.) instead of letting the rejection propagate, so every
+ * call site can `await` this and branch on `.ok` without its own try/catch.
+ * `error` is always a plain string, suitable for direct display. */
+export async function copyTextToClipboard(text) {
+  if (
+    typeof navigator === "undefined" ||
+    !navigator.clipboard ||
+    typeof navigator.clipboard.writeText !== "function"
+  ) {
+    return { ok: false, error: "Clipboard API is not available in this browser." };
+  }
+
+  try {
+    await navigator.clipboard.writeText(text);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err && err.message ? err.message : String(err) };
+  }
+}
+
+/** Shows a transient "Copied!"/"Copy failed" label on `button`, reverting to
+ * its original label after `COPY_FEEDBACK_MS` -- the same fade-back shape as
+ * `flashHighlight`'s `.nav-flash` cue (issue #5), just on a button's text
+ * instead of an outline. The button is disabled for the duration so a second
+ * click can't pile up overlapping reverts; on failure, `error` is surfaced
+ * via the button's `title` tooltip, since the label itself only has room for
+ * a short word. */
+function flashCopyFeedback(button, ok, error) {
+  const originalLabel = button.dataset.copyOriginalLabel ?? button.textContent;
+  button.dataset.copyOriginalLabel = originalLabel;
+
+  button.textContent = ok ? "Copied!" : "Copy failed";
+  button.classList.toggle("copy-success", ok);
+  button.classList.toggle("copy-failure", !ok);
+  button.title = ok ? "" : error || "Copy failed";
+  button.disabled = true;
+
+  window.setTimeout(() => {
+    button.textContent = originalLabel;
+    button.classList.remove("copy-success", "copy-failure");
+    button.title = "";
+    button.disabled = false;
+    delete button.dataset.copyOriginalLabel;
+  }, COPY_FEEDBACK_MS);
+}
+
+/** Writes `text` to the clipboard and reflects the result on `button` via
+ * `flashCopyFeedback` -- the one function every copy action in the app calls
+ * to go from "formatted text" to "in the clipboard, with feedback shown". */
+async function copyToClipboardWithFeedback(text, button) {
+  const result = await copyTextToClipboard(text);
+  flashCopyFeedback(button, result.ok, result.error);
+  return result;
+}
+
+/** Fetches the current content of every path in `paths` from `/api/file`, in
+ * parallel. Used by every copy action that spans more than one file (a
+ * directory's contents, all checked files) instead of reading
+ * `state.fileContentCache`, since that cache can be empty or still hold a
+ * "Loading…" placeholder for a file that was only just opened -- copying
+ * that placeholder text would silently corrupt the clipboard output. Throws
+ * (so the caller's `catch` can report a clipboard failure) if any single
+ * fetch fails, rather than silently omitting that file, since a copy that
+ * dropped one file without saying so would violate this issue's "file
+ * boundaries are unambiguous" acceptance criterion. */
+async function fetchFileContents(paths) {
+  return Promise.all(
+    paths.map(async (path) => {
+      const response = await fetch(apiUrl(`/api/file?path=${encodeURIComponent(path)}`));
+      if (!response.ok) {
+        throw new Error(`failed to load "${path}": HTTP ${response.status}`);
+      }
+      const content = await response.text();
+      return { path, content };
+    })
+  );
+}
+
+function formatLabel(format) {
+  switch (format) {
+    case "xml":
+      return "XML";
+    case "diff":
+      return "Diff";
+    case "markdown":
+      return "Markdown";
+    case "plain":
+    default:
+      return "Plain";
+  }
+}
+
+// A dropdown ("⋯") menu built by `buildCopyActionGroup`, currently open (if
+// any). Tracked as module state, rather than one `document`-level "click
+// outside" listener per menu instance, so repeatedly re-rendering the tree
+// or file panels (which rebuilds every menu's DOM from scratch) never
+// accumulates extra listeners on `document` -- there is exactly one such
+// listener for the whole app, wired once in `init` via
+// `wireCopyMenuDismissal`.
+let openCopyMenu = null;
+
+function closeOpenCopyMenu() {
+  if (!openCopyMenu) return;
+  openCopyMenu.menu.style.display = "none";
+  openCopyMenu.toggleButton.setAttribute("aria-expanded", "false");
+  openCopyMenu = null;
+}
+
+function wireCopyMenuDismissal() {
+  document.addEventListener("click", (event) => {
+    if (openCopyMenu && !openCopyMenu.wrap.contains(event.target)) {
+      closeOpenCopyMenu();
+    }
+  });
+}
+
+/** Builds the shared "always-visible primary button + '⋯' overflow menu"
+ * control used by every copy affordance in the app (a file panel's header, a
+ * tree directory row, the global toolbar). `getMenuItems()` is called fresh
+ * every time the "⋯" menu is opened (not once at build time), so its
+ * contents -- e.g. whether "Copy reference + code" appears at all -- always
+ * reflect the current selection/checked state rather than whatever it was
+ * when this button cluster was first rendered. Each item is
+ * `{ label, onClick(button), disabled? }`; `onClick`/`onPrimary` receive the
+ * button element that was clicked so they can pass it straight to
+ * `copyToClipboardWithFeedback`. */
+function buildCopyActionGroup(primaryLabel, onPrimary, getMenuItems) {
+  const wrap = document.createElement("div");
+  wrap.className = "copy-action-group";
+
+  const primaryButton = document.createElement("button");
+  primaryButton.type = "button";
+  primaryButton.className = "copy-button copy-button-primary";
+  primaryButton.textContent = primaryLabel;
+  primaryButton.addEventListener("click", () => onPrimary(primaryButton));
+  wrap.appendChild(primaryButton);
+
+  const menuButton = document.createElement("button");
+  menuButton.type = "button";
+  menuButton.className = "copy-menu-toggle";
+  menuButton.textContent = "⋯";
+  menuButton.setAttribute("aria-label", "More copy options");
+  menuButton.setAttribute("aria-expanded", "false");
+  wrap.appendChild(menuButton);
+
+  const menu = document.createElement("div");
+  menu.className = "copy-menu";
+  menu.style.display = "none";
+  wrap.appendChild(menu);
+
+  menuButton.addEventListener("click", (event) => {
+    event.stopPropagation();
+
+    if (openCopyMenu && openCopyMenu.menu === menu) {
+      closeOpenCopyMenu();
+      return;
+    }
+    closeOpenCopyMenu();
+
+    menu.innerHTML = "";
+    for (const item of getMenuItems()) {
+      const itemButton = document.createElement("button");
+      itemButton.type = "button";
+      itemButton.className = "copy-menu-item";
+      itemButton.textContent = item.label;
+      itemButton.disabled = Boolean(item.disabled);
+      itemButton.addEventListener("click", () => {
+        closeOpenCopyMenu();
+        item.onClick(itemButton);
+      });
+      menu.appendChild(itemButton);
+    }
+
+    menu.style.display = "flex";
+    menuButton.setAttribute("aria-expanded", "true");
+    openCopyMenu = { menu, toggleButton: menuButton, wrap };
+  });
+
+  return wrap;
+}
+
 // ---- Recently opened files (localStorage) ----
 
 function loadRecent() {
