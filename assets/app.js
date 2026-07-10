@@ -467,6 +467,230 @@ export function refFromHashFragment(fragment) {
   return parseRef(decoded);
 }
 
+// ---- Copy output formatters (issue #6) ----
+//
+// These are pure, DOM-free formatting functions (same style/place as
+// formatFileRef/formatLinesRef above) that turn already-fetched file content
+// into one of four output shapes a user can paste into a sidebar AI chat:
+//
+// - "plain": a path heading plus the raw content, verbatim. The minimal
+//   format; file boundaries between multiple files are only as unambiguous
+//   as a human reading the headings makes them.
+// - "markdown": a "### <path>" heading followed by a fenced code block,
+//   escalating to a longer backtick fence whenever the content itself
+//   contains a run of backticks that would otherwise prematurely close a
+//   three-backtick fence.
+// - "xml": a `<file path="...">...</file>` element. This isn't decorative --
+//   it exists so an AI reading multiple concatenated files can never mistake
+//   where one file's content ends and the next one's path begins, which
+//   plain/markdown headings alone cannot fully guarantee.
+// - "diff": deliberately almost identical to "plain" for now. Issue #8 will
+//   feed a real `git diff` through this same slot; the job here is only to
+//   be a correct receptacle for that future content, not to synthesize a
+//   fake diff (e.g. prefixing every line with "+") out of a file's current
+//   contents.
+
+const MARKDOWN_LANGUAGE_BY_EXTENSION = {
+  rs: "rust",
+  ts: "typescript",
+  tsx: "tsx",
+  js: "javascript",
+  jsx: "jsx",
+  mjs: "javascript",
+  py: "python",
+  go: "go",
+  java: "java",
+  c: "c",
+  h: "c",
+  cpp: "cpp",
+  hpp: "cpp",
+  rb: "ruby",
+  php: "php",
+  sh: "bash",
+  css: "css",
+  html: "html",
+  json: "json",
+  yml: "yaml",
+  yaml: "yaml",
+  toml: "toml",
+  md: "markdown",
+};
+
+/** Maps a file path's extension to the language identifier used to open a
+ * Markdown fenced code block (e.g. "src/app.rs" -> "rust"), for
+ * `formatSingleFile`'s and `formatReferenceWithCode`'s "markdown" output.
+ * Returns "" for an unrecognized or missing extension, so the fence opens
+ * with no language tag rather than a guessed-wrong one. */
+export function languageForPath(path) {
+  return MARKDOWN_LANGUAGE_BY_EXTENSION[extensionOf(path)] || "";
+}
+
+/** Escapes the characters that are unsafe inside a double-quoted XML
+ * attribute value: "&" first (so it doesn't double-escape the entities this
+ * function is about to insert), then "<", ">", and '"'. */
+export function escapeXmlAttribute(value) {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+/** Escapes the characters that are unsafe inside XML element text content:
+ * "&", "<", and ">". Quotes don't need escaping here (unlike
+ * `escapeXmlAttribute`) since this text never sits inside an attribute's own
+ * quotes. */
+export function escapeXmlText(value) {
+  return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+/** Picks a Markdown code-fence delimiter long enough that `content` can
+ * never prematurely close it: three backticks, escalated to one more than
+ * the longest run of consecutive backticks already present in `content`
+ * (content containing a triple-backtick run gets a four-backtick fence, and
+ * so on). */
+function markdownFenceFor(content) {
+  const runs = content.match(/`+/g) || [];
+  const longestRun = runs.reduce((max, run) => Math.max(max, run.length), 0);
+  return "`".repeat(Math.max(3, longestRun + 1));
+}
+
+/** Renders `path` and `content` in the shared "plain"/"diff" shape: a path
+ * heading, an underline matching its length, then the content verbatim. */
+function plainFileBlock(path, content) {
+  return `${path}\n${"-".repeat(Math.max(path.length, 3))}\n${content}`;
+}
+
+/** Formats one already-fetched file's `path`/`content` in the requested
+ * output `format` ("plain" | "markdown" | "xml" | "diff"); see the section
+ * comment above for what each format looks like and why. An unrecognized
+ * `format` falls back to "plain" rather than throwing, since a UI bug that
+ * passes a stale/typo'd format string should degrade gracefully instead of
+ * losing the user's clipboard content entirely. */
+export function formatSingleFile(path, content, format) {
+  switch (format) {
+    case "markdown": {
+      const fence = markdownFenceFor(content);
+      return `### ${path}\n\n${fence}${languageForPath(path)}\n${content}\n${fence}\n`;
+    }
+    case "xml":
+      return `<file path="${escapeXmlAttribute(path)}">${escapeXmlText(content)}</file>`;
+    case "diff":
+    case "plain":
+    default:
+      return plainFileBlock(path, content);
+  }
+}
+
+/** Formats multiple already-fetched files (`entries`: `{ path, content }[]`)
+ * as one block of text in the requested output `format`, always sorted by
+ * `path` first (the same ordering convention `nextOpenFilesList` -- the
+ * right pane's own order, established in issue #4/#5 -- already uses) so the
+ * same set of files always produces byte-identical output regardless of
+ * check/fetch order. Shared by every "copy more than one file at once"
+ * action (a directory, all checked files). "xml" wraps the individual
+ * `<file>` elements in a single `<files>` so the boundary between the whole
+ * multi-file blob and its surroundings is unambiguous too, not just the
+ * boundaries between the files themselves. */
+export function formatMultipleFiles(entries, format) {
+  const sorted = [...entries].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+
+  if (format === "xml") {
+    const body = sorted.map((entry) => formatSingleFile(entry.path, entry.content, "xml")).join("\n");
+    return `<files>\n${body}\n</files>`;
+  }
+
+  const joiner = format === "markdown" ? "\n" : "\n\n";
+  return sorted.map((entry) => formatSingleFile(entry.path, entry.content, format)).join(joiner);
+}
+
+/** Groups a flat list of file paths into a nested `{ children: Map }` tree
+ * keyed by path segment, inferring each intermediate segment as a directory
+ * purely from the fact that something continues past it -- `paths` is
+ * assumed to contain file paths only (never an explicit directory path), so
+ * a segment with no children of its own is always a file. Pulled out of
+ * `formatFileTree` so tree-shaping and text-rendering stay separate. */
+function buildPathTree(paths) {
+  const root = { children: new Map() };
+  for (const path of paths) {
+    let node = root;
+    for (const segment of path.split("/")) {
+      if (!node.children.has(segment)) {
+        node.children.set(segment, { children: new Map() });
+      }
+      node = node.children.get(segment);
+    }
+  }
+  return root;
+}
+
+/** Renders `node` (from `buildPathTree`) into indented, one-per-line path
+ * segments, appending onto `lines` in place. Mirrors `sortedChildren`'s
+ * "directories before files, each alphabetically" ordering so a copied file
+ * tree reads in the same order the explorer tree itself does. */
+function renderPathTreeLines(node, depth, lines) {
+  const names = Array.from(node.children.keys()).sort((a, b) => {
+    const aIsDir = node.children.get(a).children.size > 0;
+    const bIsDir = node.children.get(b).children.size > 0;
+    if (aIsDir !== bIsDir) return aIsDir ? -1 : 1;
+    return a < b ? -1 : a > b ? 1 : 0;
+  });
+
+  for (const name of names) {
+    const child = node.children.get(name);
+    const isDir = child.children.size > 0;
+    lines.push(`${"  ".repeat(depth)}${name}${isDir ? "/" : ""}`);
+    if (isDir) renderPathTreeLines(child, depth + 1, lines);
+  }
+}
+
+/** Formats a directory/file tree -- no file contents, just the shape -- for
+ * `paths` (a flat list of file paths, assumed already sorted; the nesting
+ * itself is derived from the paths' own "/" segments). "xml" is a flat
+ * `<tree><file path="..."/>...</tree>` list (a tree has no content
+ * boundaries to protect the way file contents do, so there's no need to
+ * nest it); "plain"/"diff" render the same indented listing ("diff" has no
+ * notion of a tree-shaped diff, so it reuses "plain"); "markdown" wraps that
+ * same listing in a fenced code block. */
+export function formatFileTree(paths, format) {
+  if (format === "xml") {
+    const fileTags = paths.map((path) => `<file path="${escapeXmlAttribute(path)}"/>`).join("\n");
+    return `<tree>\n${fileTags}\n</tree>`;
+  }
+
+  const lines = [];
+  renderPathTreeLines(buildPathTree(paths), 0, lines);
+  const listing = lines.join("\n");
+
+  return format === "markdown" ? `\`\`\`\n${listing}\n\`\`\`` : listing;
+}
+
+/** Formats a stable reference string (`ref`, e.g. from `formatFileRef` or
+ * `formatLinesRef`) together with the code it points at, in the requested
+ * output `format`. `content` is expected to already be sliced down to
+ * whatever `ref` describes (e.g. just the selected line range for an
+ * `@lines:` ref) -- this function only formats, it doesn't re-derive which
+ * lines to include. The Markdown fence's language is guessed from `ref`'s
+ * embedded path via `parseRef`, falling back to no language tag if `ref`
+ * isn't a well-formed reference. */
+export function formatReferenceWithCode(ref, content, format) {
+  const parsed = parseRef(ref);
+
+  switch (format) {
+    case "markdown": {
+      const fence = markdownFenceFor(content);
+      const lang = parsed ? languageForPath(parsed.path) : "";
+      return `### ${ref}\n\n${fence}${lang}\n${content}\n${fence}\n`;
+    }
+    case "xml":
+      return `<file ref="${escapeXmlAttribute(ref)}">${escapeXmlText(content)}</file>`;
+    case "diff":
+    case "plain":
+    default:
+      return `${ref}\n${content}`;
+  }
+}
+
 // ---- Search filter ----
 
 function wireSearchInput() {
