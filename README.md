@@ -54,6 +54,40 @@ panel (applying the line selection first, for `@lines:`). Opening a file
 automatically from a fragment is out of scope: if the file isn't open yet,
 an `@file:`/`@lines:` fragment is a no-op.
 
+### Copy actions and output formats
+
+Every place content can be copied -- a file panel's header, a directory row
+in the tree (hover to reveal), and the content pane's global toolbar -- shows
+the same control: an always-visible primary button plus a "⋯" button that
+opens a menu of the other output formats and actions (a reference-only copy,
+and, once a line range is selected, a reference-plus-code copy). The primary
+button always copies as Markdown; the "⋯" menu covers the rest.
+
+There are four output formats:
+
+- **plain**: a path heading, an underline, and the file's content verbatim.
+  The minimal format -- file boundaries between multiple files are only as
+  unambiguous as a human reading the headings makes them.
+- **markdown**: a `### <path>` heading followed by a fenced code block
+  (escalating the fence length whenever the content itself contains
+  backticks that would otherwise close it early).
+- **xml**: a `<file path="...">...</file>` element (multi-file copies are
+  wrapped in a single `<files>`). This isn't decoration -- it exists so an AI
+  reading multiple concatenated files can't mistake where one file's content
+  ends and the next one's path begins, something plain/markdown headings
+  alone can't fully guarantee.
+- **diff**: deliberately almost identical to plain for now. A future issue
+  will feed a real `git diff` through this same slot; today it's just a
+  correct receptacle for that content, not a synthesized fake diff.
+
+A successful or failed copy is reflected right on the button that triggered
+it (a transient "Copied!"/"Copy failed" label). A multi-file copy re-fetches
+every file's content before writing to the clipboard, which can take long
+enough that an unrelated re-render (e.g. toggling a checkbox) removes that
+button from the page first; when that happens, the same feedback appears
+instead as a toast notification in the corner of the page, so the result is
+never silently lost.
+
 ## API
 
 `GET /{token}/api/root` returns the selected root's `basename` and resolved
