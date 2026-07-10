@@ -304,12 +304,27 @@ button {
   flex-shrink: 0;
 }
 
-/* A URL-fragment jump ("@file:"/"@dir:"/"@lines:" navigation) briefly
-   outlines its target so there is a visible "you are here" cue; removed
-   again a short time later (see NAV_FLASH_MS in app.js). */
-.nav-flash {
-  outline: 2px solid var(--accent);
+/* Both kinds of navigable target -- a tree row and a file panel -- keep a
+   permanently-present outline that starts fully transparent, with only its
+   color ever transitioning. This is deliberate, not decorative: toggling
+   `outline-style`/`outline-width` on and off (e.g. via a single "outline: 2px
+   solid X" shorthand added/removed by `.nav-flash` alone) would pop the
+   outline in and out instantly, because `outline-style` is a discrete,
+   non-interpolable property that isn't covered by a `transition:
+   outline-color` declaration -- only the color component would animate,
+   which is invisible once the style itself has already snapped to "none".
+   Keeping the outline always "solid" and only ever varying its color sidesteps
+   that entirely, so the fade in `flashHighlight`'s "you are here" cue (see
+   NAV_FLASH_MS in app.js) is real. */
+.tree-node,
+.file-panel {
+  outline: 2px solid transparent;
   outline-offset: 2px;
+  transition: outline-color 0.3s ease-out;
+}
+
+.nav-flash {
+  outline-color: var(--accent);
 }
 
 /* ---- Resizer ---- */
