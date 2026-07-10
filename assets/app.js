@@ -568,7 +568,7 @@ export function escapeXmlText(value) {
  * the longest run of consecutive backticks already present in `content`
  * (content containing a triple-backtick run gets a four-backtick fence, and
  * so on). */
-function markdownFenceFor(content) {
+export function markdownFenceFor(content) {
   const runs = content.match(/`+/g) || [];
   const longestRun = runs.reduce((max, run) => Math.max(max, run.length), 0);
   return "`".repeat(Math.max(3, longestRun + 1));
@@ -1175,7 +1175,10 @@ export async function copyTextToClipboard(text) {
     await navigator.clipboard.writeText(text);
     return { ok: true };
   } catch (err) {
-    return { ok: false, error: err && err.message ? err.message : String(err) };
+    return {
+      ok: false,
+      error: err && err.message !== undefined ? String(err.message) : String(err),
+    };
   }
 }
 
@@ -1224,7 +1227,7 @@ async function copyToClipboardWithFeedback(text, button) {
  * fetch fails, rather than silently omitting that file, since a copy that
  * dropped one file without saying so would violate this issue's "file
  * boundaries are unambiguous" acceptance criterion. */
-async function fetchFileContents(paths) {
+export async function fetchFileContents(paths) {
   return Promise.all(
     paths.map(async (path) => {
       const response = await fetch(apiUrl(`/api/file?path=${encodeURIComponent(path)}`));
@@ -1237,7 +1240,7 @@ async function fetchFileContents(paths) {
   );
 }
 
-function formatLabel(format) {
+export function formatLabel(format) {
   switch (format) {
     case "xml":
       return "XML";
