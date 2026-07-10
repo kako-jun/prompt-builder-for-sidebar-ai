@@ -21,12 +21,27 @@ cargo run -- .
 cargo run -- ~/repos/my-project
 ```
 
-## File discovery
+## API
+
+`GET /{token}/api/root` returns the selected root's `basename` and resolved
+`absolutePath` as JSON, so the frontend can present the root as the
+explorer's top-level node without ever exposing a way to navigate above it.
 
 `GET /{token}/api/tree` returns a flat, path-sorted JSON list of every
 eligible file and directory under the selected root (see `src/discovery.rs`).
 Each entry has a `/`-separated `path` relative to the root, `is_dir`, and
 `likely_secret`.
+
+`GET /{token}/api/file?path=<relative path>` returns one file's content as
+`text/plain; charset=utf-8`. This is the most security-sensitive endpoint in
+the app: the requested path is joined onto the canonicalized root,
+canonicalized itself, and rejected with 403 unless the result still starts
+with the canonicalized root, so `../` traversal, an absolute-path query
+value, and a symlink that points outside the root are all refused rather
+than followed. A missing/empty `path` query returns 400; a missing,
+directory, or non-regular-file path returns 404; a binary file (by the same
+NUL-sniffing heuristic `api/tree` uses) or content that isn't valid UTF-8
+returns 400.
 
 ### What is excluded
 

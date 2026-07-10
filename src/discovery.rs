@@ -191,7 +191,11 @@ fn normalize_path(relative: &Path) -> String {
 /// NUL byte appears in that prefix. Read failures (e.g. permission denied)
 /// are surfaced as `Err` so the caller can skip the entry instead of
 /// panicking.
-fn is_probably_binary(path: &Path) -> std::io::Result<bool> {
+///
+/// Public so `/{token}/api/file` (see `src/lib.rs`) can reuse the exact same
+/// heuristic instead of duplicating it: a file this function excludes from
+/// the tree must also be refused by the single-file endpoint.
+pub fn is_probably_binary(path: &Path) -> std::io::Result<bool> {
     let file = std::fs::File::open(path)?;
     let mut buffer = Vec::with_capacity(BINARY_SNIFF_LEN);
     file.take(BINARY_SNIFF_LEN as u64)
