@@ -377,10 +377,18 @@ export function formatDirRef(path) {
   return `@dir:${path}`;
 }
 
+/** Formats a "@lines:<path>#L<start>" or "@lines:<path>#L<start>-L<end>"
+ * reference, normalizing `start`/`end` to `min`/`max` regardless of call
+ * order (mirroring `parseRef`'s leniency about swapped numbers) and
+ * clamping both to a minimum of 1. The clamp keeps this function's output
+ * always parseable by `parseRef` -- which rejects any line number below 1
+ * -- even if a caller passes 0 or a negative number in by mistake, since
+ * callers (e.g. a future copy-to-clipboard feature) shouldn't have to
+ * separately validate line numbers before formatting them. */
 export function formatLinesRef(path, start, end) {
   const rangeEnd = end ?? start;
-  const lo = Math.min(start, rangeEnd);
-  const hi = Math.max(start, rangeEnd);
+  const lo = Math.max(1, Math.min(start, rangeEnd));
+  const hi = Math.max(1, Math.max(start, rangeEnd));
   return lo === hi ? `@lines:${path}#L${lo}` : `@lines:${path}#L${lo}-L${hi}`;
 }
 

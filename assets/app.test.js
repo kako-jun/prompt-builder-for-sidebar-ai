@@ -470,6 +470,23 @@ describe("formatLinesRef", () => {
   test("passing end explicitly equal to start matches the output of omitting end", () => {
     assert.equal(formatLinesRef("a.js", 5, 5), formatLinesRef("a.js", 5));
   });
+
+  test("a start of 0 is clamped to 1, matching parseRef's own lower bound", () => {
+    assert.equal(formatLinesRef("a.js", 0, 5), "@lines:a.js#L1-L5");
+  });
+
+  test("a negative start is clamped to 1", () => {
+    assert.equal(formatLinesRef("a.js", -3, 5), "@lines:a.js#L1-L5");
+  });
+
+  test("both endpoints below 1 clamp to a single-line '#L1' form, never '#L0' or negative", () => {
+    assert.equal(formatLinesRef("a.js", -3, 0), "@lines:a.js#L1");
+  });
+
+  test("every clamped output round-trips through parseRef (the invariant this fix restores)", () => {
+    assert.deepEqual(parseRef(formatLinesRef("a.js", 0, 0)), { kind: "lines", path: "a.js", start: 1, end: 1 });
+    assert.deepEqual(parseRef(formatLinesRef("a.js", -5, -1)), { kind: "lines", path: "a.js", start: 1, end: 1 });
+  });
 });
 
 // ---- parseRef: normal cases ----
