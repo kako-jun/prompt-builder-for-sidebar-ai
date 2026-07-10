@@ -1085,6 +1085,27 @@ async fn api_file_returns_200_for_a_multi_megabyte_text_file() {
     server.abort();
 }
 
+#[tokio::test]
+async fn api_file_returns_400_for_a_file_over_the_size_limit() {
+    // A sparse file (via `set_len`, not actually writing gigabytes of real
+    // data) is enough to exercise the size check without slowing down the
+    // suite.
+    let scratch = ScratchDir::new("file-over-size-limit");
+    let path = scratch.path().join("huge.txt");
+    let file = fs::File::create(&path).unwrap();
+    file.set_len(prompt_builder_for_sidebar_ai::discovery::MAX_SERVABLE_FILE_SIZE + 1)
+        .unwrap();
+    let (addr, token, server) = spawn_test_server_with_root(scratch.path().to_path_buf()).await;
+
+    let response = get(addr, &format!("/{token}/api/file?path=huge.txt")).await;
+    assert!(
+        response.starts_with("HTTP/1.1 400"),
+        "expected 400 for a file over the size limit, got: {response}"
+    );
+
+    server.abort();
+}
+
 // ---- /api/diff ----
 
 #[tokio::test]

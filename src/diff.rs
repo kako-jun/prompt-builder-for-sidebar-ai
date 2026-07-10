@@ -4,7 +4,7 @@
 //! matching the same "never mutate the user's project" invariant the rest of
 //! this tool already holds for file discovery and reading.
 
-use crate::discovery::{is_probably_binary, resolve_regular_file};
+use crate::discovery::{is_probably_binary, is_within_size_limit, resolve_regular_file};
 use std::path::Path;
 use std::process::Command;
 
@@ -186,7 +186,9 @@ fn list_untracked_files(root: &Path) -> Vec<String> {
 /// symlink (via [`resolve_regular_file`], the same discipline `serve_file`
 /// uses for `/api/file`; Git itself never reports such a path here, but
 /// re-validating costs nothing and keeps this function correct even if that
-/// assumption ever stops holding), a non-regular file, a binary file (via
+/// assumption ever stops holding), a file larger than
+/// [`crate::discovery::MAX_SERVABLE_FILE_SIZE`] (via [`is_within_size_limit`],
+/// the same cap `/api/file` enforces), a non-regular file, a binary file (via
 /// [`is_probably_binary`], the same heuristic `/api/tree` and `/api/file`
 /// both already use -- checked before ever invoking `git`, so a binary
 /// file's content is never even offered to `git diff`, rather than relying
@@ -201,6 +203,14 @@ fn list_untracked_files(root: &Path) -> Vec<String> {
 /// [`run_git_diff_head`] does.
 fn synthesize_untracked_diff(root: &Path, path: &str) -> Option<String> {
     let candidate = resolve_regular_file(root, path)?;
+
+    // Issue #9 resource-limit hardening: an oversized untracked file is
+    // silently omitted here, the same "skip just this one entry" treatment
+    // a binary or symlinked file already gets, rather than handing an
+    // arbitrarily large file to `git diff --no-index`.
+    if !is_within_size_limit(&candidate) {
+        return None;
+    }
 
     if is_probably_binary(&candidate).unwrap_or(true) {
         return None;
@@ -419,6 +429,20 @@ mod tests {
 
         let result = compute_diff(repo.path());
         assert!(!result.diff.contains("binary.dat"));
+    }
+
+    #[test]
+    fn an_untracked_file_over_the_size_limit_is_omitted_rather_than_erroring() {
+        let repo = ScratchRepo::init("oversized");
+        repo.write("a.txt", "hello\n");
+        repo.commit_all("init");
+        let path = repo.path().join("huge.txt");
+        let file = std::fs::File::create(&path).expect("should create the file");
+        file.set_len(crate::discovery::MAX_SERVABLE_FILE_SIZE + 1)
+            .expect("should extend the file past the size limit");
+
+        let result = compute_diff(repo.path());
+        assert!(!result.diff.contains("huge.txt"));
     }
 
     #[cfg(unix)]

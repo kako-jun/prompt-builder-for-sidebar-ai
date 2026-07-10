@@ -9,132 +9,140 @@
     </style>
   </head>
   <body>
-    <div id="app" class="app">
-      <aside id="explorer-pane" class="explorer-pane">
-        <div class="root-info">
-          <h1 id="root-basename" class="root-basename">Loading…</h1>
-          <p id="root-path" class="root-path"></p>
-        </div>
-
-        <div class="presets" role="group" aria-label="Selection presets">
-          <button type="button" class="preset-button" data-preset="all-text">All text files</button>
-          <button type="button" class="preset-button" data-preset="source">Source only</button>
-          <button type="button" class="preset-button" data-preset="docs">Docs only</button>
-          <button type="button" class="preset-button preset-button-clear" data-preset="clear">Clear selection</button>
-        </div>
-
-        <div class="search">
-          <label for="search-input" class="visually-hidden">Filter files by path</label>
-          <input
-            id="search-input"
-            type="search"
-            class="search-input"
-            placeholder="Filter by path…"
-            autocomplete="off"
-            spellcheck="false"
-          />
-        </div>
-
-        <section class="recent" aria-label="Recently opened files">
-          <div class="recent-header">
-            <h2 class="recent-title">Recently opened</h2>
-            <button type="button" id="recent-clear" class="recent-clear-button">Clear</button>
+    <div class="page">
+      <div id="security-notice" class="security-notice" role="note">
+        ⚠ Anything you copy from this page may be pasted into a third-party AI
+        assistant. File content can contain instructions written to manipulate
+        that AI ("prompt injection") -- review what you're about to share
+        before pasting it anywhere.
+      </div>
+      <div id="app" class="app">
+        <aside id="explorer-pane" class="explorer-pane">
+          <div class="root-info">
+            <h1 id="root-basename" class="root-basename">Loading…</h1>
+            <p id="root-path" class="root-path"></p>
           </div>
-          <ul id="recent-list" class="recent-list"></ul>
-        </section>
 
-        <nav id="tree-root" class="tree" aria-label="File explorer"></nav>
-      </aside>
-
-      <div
-        id="resizer"
-        class="resizer"
-        role="separator"
-        aria-orientation="vertical"
-        aria-label="Resize explorer pane"
-        tabindex="0"
-      ></div>
-
-      <main id="content-pane" class="content-pane">
-        <section id="prompt-composer" class="prompt-composer" aria-label="Prompt composer">
-          <div class="prompt-composer-header">
-            <h2 class="prompt-composer-title">Prompt composer</h2>
-            <button
-              type="button"
-              id="prompt-composer-toggle"
-              class="prompt-composer-toggle"
-              aria-expanded="true"
-              aria-label="Collapse prompt composer"
-            >▾</button>
+          <div class="presets" role="group" aria-label="Selection presets">
+            <button type="button" class="preset-button" data-preset="all-text">All text files</button>
+            <button type="button" class="preset-button" data-preset="source">Source only</button>
+            <button type="button" class="preset-button" data-preset="docs">Docs only</button>
+            <button type="button" class="preset-button preset-button-clear" data-preset="clear">Clear selection</button>
           </div>
-          <div id="prompt-composer-body" class="prompt-composer-body">
-            <div class="prompt-composer-fields">
-              <label class="prompt-field">
-                <span>Goal</span>
-                <select id="prompt-goal"></select>
+
+          <div class="search">
+            <label for="search-input" class="visually-hidden">Filter files by path</label>
+            <input
+              id="search-input"
+              type="search"
+              class="search-input"
+              placeholder="Filter by path…"
+              autocomplete="off"
+              spellcheck="false"
+            />
+          </div>
+
+          <section class="recent" aria-label="Recently opened files">
+            <div class="recent-header">
+              <h2 class="recent-title">Recently opened</h2>
+              <button type="button" id="recent-clear" class="recent-clear-button">Clear</button>
+            </div>
+            <ul id="recent-list" class="recent-list"></ul>
+          </section>
+
+          <nav id="tree-root" class="tree" aria-label="File explorer"></nav>
+        </aside>
+
+        <div
+          id="resizer"
+          class="resizer"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize explorer pane"
+          tabindex="0"
+        ></div>
+
+        <main id="content-pane" class="content-pane">
+          <section id="prompt-composer" class="prompt-composer" aria-label="Prompt composer">
+            <div class="prompt-composer-header">
+              <h2 class="prompt-composer-title">Prompt composer</h2>
+              <button
+                type="button"
+                id="prompt-composer-toggle"
+                class="prompt-composer-toggle"
+                aria-expanded="true"
+                aria-label="Collapse prompt composer"
+              >▾</button>
+            </div>
+            <div id="prompt-composer-body" class="prompt-composer-body">
+              <div class="prompt-composer-fields">
+                <label class="prompt-field">
+                  <span>Goal</span>
+                  <select id="prompt-goal"></select>
+                </label>
+                <label class="prompt-field">
+                  <span>Target</span>
+                  <select id="prompt-target"></select>
+                </label>
+                <label class="prompt-field">
+                  <span>Output</span>
+                  <select id="prompt-output"></select>
+                </label>
+                <label id="prompt-filename-field" class="prompt-field" hidden>
+                  <span>Filename</span>
+                  <input
+                    id="prompt-filename"
+                    type="text"
+                    placeholder="e.g. test-spec.md"
+                    autocomplete="off"
+                    spellcheck="false"
+                  />
+                </label>
+                <label class="prompt-field">
+                  <span>Context mode</span>
+                  <select id="prompt-context-mode"></select>
+                </label>
+              </div>
+
+              <label class="prompt-field prompt-field-wide">
+                <span>Additional instructions (optional)</span>
+                <textarea id="prompt-extra" rows="2"></textarea>
               </label>
-              <label class="prompt-field">
-                <span>Target</span>
-                <select id="prompt-target"></select>
-              </label>
-              <label class="prompt-field">
-                <span>Output</span>
-                <select id="prompt-output"></select>
-              </label>
-              <label id="prompt-filename-field" class="prompt-field" hidden>
-                <span>Filename</span>
-                <input
-                  id="prompt-filename"
-                  type="text"
-                  placeholder="e.g. test-spec.md"
-                  autocomplete="off"
-                  spellcheck="false"
-                />
-              </label>
-              <label class="prompt-field">
-                <span>Context mode</span>
-                <select id="prompt-context-mode"></select>
+
+              <div class="prompt-composer-actions">
+                <button type="button" id="prompt-generate" class="prompt-generate-button">
+                  Generate prompt
+                </button>
+                <button type="button" id="prompt-copy" class="copy-button copy-button-primary">
+                  Copy prompt
+                </button>
+              </div>
+
+              <label class="prompt-field prompt-field-wide">
+                <span>Generated prompt (editable)</span>
+                <textarea
+                  id="prompt-result"
+                  class="prompt-result"
+                  rows="10"
+                  placeholder="Choose options above and click “Generate prompt”."
+                ></textarea>
               </label>
             </div>
+          </section>
 
-            <label class="prompt-field prompt-field-wide">
-              <span>Additional instructions (optional)</span>
-              <textarea id="prompt-extra" rows="2"></textarea>
-            </label>
-
-            <div class="prompt-composer-actions">
-              <button type="button" id="prompt-generate" class="prompt-generate-button">
-                Generate prompt
-              </button>
-              <button type="button" id="prompt-copy" class="copy-button copy-button-primary">
-                Copy prompt
-              </button>
+          <div id="content-toolbar" class="content-toolbar">
+            <div class="content-toolbar-info">
+              <span id="content-toolbar-count" class="content-toolbar-count"></span>
+              <span id="content-toolbar-stats" class="content-toolbar-stats"></span>
             </div>
-
-            <label class="prompt-field prompt-field-wide">
-              <span>Generated prompt (editable)</span>
-              <textarea
-                id="prompt-result"
-                class="prompt-result"
-                rows="10"
-                placeholder="Choose options above and click “Generate prompt”."
-              ></textarea>
-            </label>
+            <div id="content-toolbar-actions" class="content-toolbar-actions"></div>
           </div>
-        </section>
-
-        <div id="content-toolbar" class="content-toolbar">
-          <div class="content-toolbar-info">
-            <span id="content-toolbar-count" class="content-toolbar-count"></span>
-            <span id="content-toolbar-stats" class="content-toolbar-stats"></span>
-          </div>
-          <div id="content-toolbar-actions" class="content-toolbar-actions"></div>
-        </div>
-        <p id="content-empty-hint" class="empty-hint">
-          Select files in the explorer to see their contents here.
-        </p>
-        <div id="file-panels" class="file-panels"></div>
-      </main>
+          <p id="content-empty-hint" class="empty-hint">
+            Select files in the explorer to see their contents here.
+          </p>
+          <div id="file-panels" class="file-panels"></div>
+        </main>
+      </div>
     </div>
 
     <div id="copy-toast" class="copy-toast" role="status" aria-live="polite" hidden></div>

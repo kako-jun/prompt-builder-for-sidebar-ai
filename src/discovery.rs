@@ -56,6 +56,22 @@ const LIKELY_SECRET_EXTENSIONS: &[&str] = &["pem", "key", "pfx", "p12", "jks"];
 /// the first chunk of the file, treat it as binary.
 const BINARY_SNIFF_LEN: usize = 8000;
 
+/// A hard cap on how many entries [`discover_tree`] will ever collect for a
+/// single request. A backstop against a pathological tree (a directory
+/// containing an enormous number of files, deliberately or otherwise)
+/// consuming unbounded memory and time on every single `/api/tree` request;
+/// set far above what any real project's file count looks like, so it is
+/// never expected to matter for ordinary use.
+const MAX_TREE_ENTRIES: usize = 50_000;
+
+/// Files above this size are refused (via [`is_within_size_limit`]) rather
+/// than served/diffed in full: a per-file cap meant to keep a single request
+/// bounded in memory and time, not a judgment about what counts as "too
+/// big" for a prompt -- the frontend's own selection-size statistics and
+/// "large selection" warning (issue #8) already handle that concern at a
+/// higher level, across a whole selection rather than one file.
+pub const MAX_SERVABLE_FILE_SIZE: u64 = 10 * 1024 * 1024;
+
 /// A single file or directory entry in the discovered tree.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct FileEntry {
@@ -86,8 +102,22 @@ pub struct FileEntry {
 ///   bytes) or that cannot be read (e.g. a permission error): these are
 ///   skipped rather than causing the whole walk to fail.
 ///
+/// - Anything beyond the first [`MAX_TREE_ENTRIES`] entries the walk would
+///   otherwise produce (issue #9's resource-limit hardening against a
+///   pathological tree): the walk simply stops there rather than continuing
+///   to consume memory and time unboundedly.
+///
 /// `root` itself is not included as an entry; only its contents are.
 pub fn discover_tree(root: &Path) -> Vec<FileEntry> {
+    discover_tree_with_limit(root, MAX_TREE_ENTRIES)
+}
+
+/// The actual implementation behind [`discover_tree`], taking `max_entries`
+/// as a parameter so tests can exercise the truncation behavior itself
+/// (without needing to actually create `MAX_TREE_ENTRIES` real files on
+/// disk, which the real constant is deliberately too large to make
+/// practical for a fast unit test).
+fn discover_tree_with_limit(root: &Path, max_entries: usize) -> Vec<FileEntry> {
     let mut entries = Vec::new();
 
     let walker = WalkBuilder::new(root)
@@ -123,6 +153,10 @@ pub fn discover_tree(root: &Path) -> Vec<FileEntry> {
         .build();
 
     for result in walker {
+        if entries.len() >= max_entries {
+            break;
+        }
+
         let entry = match result {
             Ok(entry) => entry,
             // Permission errors and the like on a single entry shouldn't
@@ -244,6 +278,19 @@ pub fn is_probably_binary(path: &Path) -> std::io::Result<bool> {
     file.take(BINARY_SNIFF_LEN as u64)
         .read_to_end(&mut buffer)?;
     Ok(buffer.contains(&0))
+}
+
+/// Returns whether `path`'s size is within [`MAX_SERVABLE_FILE_SIZE`]. A
+/// metadata read failure is treated as "not within the limit" -- refuse
+/// rather than risk serving/diffing something whose size couldn't even be
+/// checked. Public so both `/{token}/api/file` (`serve_file` in
+/// `src/lib.rs`) and the Git-diff module's untracked-file handling
+/// (`synthesize_untracked_diff` in `src/diff.rs`) enforce the identical cap
+/// instead of each maintaining their own copy of it.
+pub fn is_within_size_limit(path: &Path) -> bool {
+    std::fs::metadata(path)
+        .map(|metadata| metadata.len() <= MAX_SERVABLE_FILE_SIZE)
+        .unwrap_or(false)
 }
 
 /// Baseline, non-exhaustive check for file names that commonly hold
@@ -947,5 +994,61 @@ mod tests {
         .unwrap();
 
         assert_eq!(resolve_regular_file(scratch.path(), "link-dir/a.txt"), None);
+    }
+
+    // ---- is_within_size_limit ----
+
+    #[test]
+    fn is_within_size_limit_accepts_a_small_file() {
+        let scratch = ScratchDir::new("size-small");
+        fs::write(scratch.path().join("a.txt"), "hello").unwrap();
+        assert!(is_within_size_limit(&scratch.path().join("a.txt")));
+    }
+
+    #[test]
+    fn is_within_size_limit_rejects_a_file_over_the_cap() {
+        let scratch = ScratchDir::new("size-large");
+        let path = scratch.path().join("big.bin");
+        let file = fs::File::create(&path).unwrap();
+        file.set_len(MAX_SERVABLE_FILE_SIZE + 1).unwrap();
+        assert!(!is_within_size_limit(&path));
+    }
+
+    #[test]
+    fn is_within_size_limit_accepts_a_file_exactly_at_the_cap() {
+        let scratch = ScratchDir::new("size-exact");
+        let path = scratch.path().join("exact.bin");
+        let file = fs::File::create(&path).unwrap();
+        file.set_len(MAX_SERVABLE_FILE_SIZE).unwrap();
+        assert!(is_within_size_limit(&path));
+    }
+
+    #[test]
+    fn is_within_size_limit_rejects_a_missing_file() {
+        let scratch = ScratchDir::new("size-missing");
+        assert!(!is_within_size_limit(&scratch.path().join("nope.txt")));
+    }
+
+    // ---- discover_tree pathological-tree cap ----
+
+    #[test]
+    fn discover_tree_with_limit_caps_the_number_of_entries_collected() {
+        let scratch = ScratchDir::new("tree-cap");
+        for i in 0..10 {
+            fs::write(scratch.path().join(format!("f{i}.txt")), "x").unwrap();
+        }
+
+        let entries = discover_tree_with_limit(scratch.path(), 3);
+        assert_eq!(entries.len(), 3);
+    }
+
+    #[test]
+    fn discover_tree_with_limit_returns_every_entry_when_under_the_cap() {
+        let scratch = ScratchDir::new("tree-under-cap");
+        fs::write(scratch.path().join("a.txt"), "a").unwrap();
+        fs::write(scratch.path().join("b.txt"), "b").unwrap();
+
+        let entries = discover_tree_with_limit(scratch.path(), 1000);
+        assert_eq!(entries.len(), 2);
     }
 }

@@ -44,11 +44,32 @@ button {
   white-space: nowrap;
 }
 
+.page {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  min-width: 720px;
+}
+
+/* Issue #9: a persistent (not dismissible -- see the HTML comment near its
+   markup) disclosure that copied content may reach a third-party AI and can
+   carry prompt-injection text. Kept slim so it doesn't meaningfully compete
+   with the explorer/content panes for space. */
+.security-notice {
+  flex-shrink: 0;
+  padding: 0.4rem 0.9rem;
+  background: rgba(224, 169, 64, 0.12);
+  border-bottom: 1px solid var(--warning);
+  color: var(--warning);
+  font-size: 0.78rem;
+  line-height: 1.4;
+}
+
 .app {
   display: flex;
-  height: 100vh;
+  flex: 1;
+  min-height: 0;
   width: 100%;
-  min-width: 720px;
 }
 
 /* ---- Explorer (left) pane ---- */
