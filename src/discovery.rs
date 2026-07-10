@@ -15,7 +15,7 @@
 use ignore::WalkBuilder;
 use serde::Serialize;
 use std::io::Read;
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 
 /// Directory names that are always excluded, even when the project has no
 /// `.gitignore` of its own. This is a small, non-exhaustive baseline list,
@@ -185,6 +185,49 @@ fn normalize_path(relative: &Path) -> String {
         .map(|component| component.as_os_str().to_string_lossy())
         .collect::<Vec<_>>()
         .join("/")
+}
+
+/// Validates `requested_path` (untrusted -- an HTTP query value, a `git
+/// status` listing, anything not already known-safe) component by component
+/// against `canonical_root` (the caller's responsibility to have already
+/// canonicalized), and returns the resulting filesystem path if -- and only
+/// if -- every check passes. This is the one path-validation discipline this
+/// whole tool relies on wherever an untrusted relative path needs to become
+/// a real path beneath the selected root: `/{token}/api/file` (`serve_file`
+/// in `src/lib.rs`) and the Git-diff module's untracked-file handling
+/// (`synthesize_untracked_diff` in `src/diff.rs`) both call this instead of
+/// each maintaining their own copy of the same rules.
+///
+/// Rejects (returning `None`) for any of:
+/// - A component that isn't [`Component::Normal`] -- a `..` (`ParentDir`), a
+///   leading `/` (`RootDir`/`Prefix`), or a `.` (`CurDir`) -- checked before
+///   the filesystem is ever touched, so a path that would escape the root
+///   can't be distinguished (by response timing or otherwise) from one that
+///   merely doesn't exist.
+/// - Any component -- intermediate or final -- that is a symlink (checked
+///   with [`std::fs::symlink_metadata`], which does not follow the link
+///   itself), matching the same "never follow a symlink" invariant
+///   [`discover_tree`] already uses.
+/// - A final path that isn't a regular file (missing, a directory, or a
+///   non-regular file such as a FIFO/socket/device).
+pub fn resolve_regular_file(canonical_root: &Path, requested_path: &str) -> Option<PathBuf> {
+    let mut candidate = canonical_root.to_path_buf();
+    for component in Path::new(requested_path).components() {
+        let Component::Normal(part) = component else {
+            return None;
+        };
+        candidate.push(part);
+        match std::fs::symlink_metadata(&candidate) {
+            Ok(metadata) if !metadata.file_type().is_symlink() => {}
+            _ => return None,
+        }
+    }
+
+    let is_regular_file = std::fs::metadata(&candidate)
+        .map(|metadata| metadata.file_type().is_file())
+        .unwrap_or(false);
+
+    is_regular_file.then_some(candidate)
 }
 
 /// Reads up to [`BINARY_SNIFF_LEN`] bytes of `path` and returns whether a
@@ -828,5 +871,81 @@ mod tests {
             entries.iter().all(|e| e.path != ".env"),
             ".env excluded by .gitignore should never appear in the tree, even flagged: {entries:?}"
         );
+    }
+
+    // ---- resolve_regular_file ----
+
+    #[test]
+    fn resolve_regular_file_accepts_a_plain_relative_path() {
+        let scratch = ScratchDir::new("resolve-plain");
+        fs::write(scratch.path().join("a.txt"), "hello").unwrap();
+
+        let resolved = resolve_regular_file(scratch.path(), "a.txt");
+        assert_eq!(resolved, Some(scratch.path().join("a.txt")));
+    }
+
+    #[test]
+    fn resolve_regular_file_accepts_a_nested_relative_path() {
+        let scratch = ScratchDir::new("resolve-nested");
+        fs::create_dir_all(scratch.path().join("sub/dir")).unwrap();
+        fs::write(scratch.path().join("sub/dir/a.txt"), "hello").unwrap();
+
+        let resolved = resolve_regular_file(scratch.path(), "sub/dir/a.txt");
+        assert_eq!(resolved, Some(scratch.path().join("sub/dir/a.txt")));
+    }
+
+    #[test]
+    fn resolve_regular_file_rejects_parent_dir_traversal() {
+        let scratch = ScratchDir::new("resolve-traversal");
+        assert_eq!(resolve_regular_file(scratch.path(), "../secret.txt"), None);
+    }
+
+    #[test]
+    fn resolve_regular_file_rejects_an_absolute_path() {
+        let scratch = ScratchDir::new("resolve-absolute");
+        fs::write(scratch.path().join("a.txt"), "hello").unwrap();
+        assert_eq!(resolve_regular_file(scratch.path(), "/etc/passwd"), None);
+    }
+
+    #[test]
+    fn resolve_regular_file_rejects_a_directory() {
+        let scratch = ScratchDir::new("resolve-dir");
+        fs::create_dir(scratch.path().join("sub")).unwrap();
+        assert_eq!(resolve_regular_file(scratch.path(), "sub"), None);
+    }
+
+    #[test]
+    fn resolve_regular_file_rejects_a_missing_path() {
+        let scratch = ScratchDir::new("resolve-missing");
+        assert_eq!(resolve_regular_file(scratch.path(), "nope.txt"), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_regular_file_rejects_a_symlinked_file() {
+        let scratch = ScratchDir::new("resolve-symlink-file");
+        fs::write(scratch.path().join("real.txt"), "hello").unwrap();
+        std::os::unix::fs::symlink(
+            scratch.path().join("real.txt"),
+            scratch.path().join("link.txt"),
+        )
+        .unwrap();
+
+        assert_eq!(resolve_regular_file(scratch.path(), "link.txt"), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_regular_file_rejects_a_path_through_a_symlinked_intermediate_directory() {
+        let scratch = ScratchDir::new("resolve-symlink-dir");
+        fs::create_dir(scratch.path().join("real-dir")).unwrap();
+        fs::write(scratch.path().join("real-dir/a.txt"), "hello").unwrap();
+        std::os::unix::fs::symlink(
+            scratch.path().join("real-dir"),
+            scratch.path().join("link-dir"),
+        )
+        .unwrap();
+
+        assert_eq!(resolve_regular_file(scratch.path(), "link-dir/a.txt"), None);
     }
 }

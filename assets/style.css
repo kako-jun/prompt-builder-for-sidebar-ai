@@ -608,6 +608,131 @@ body.resizing {
   color: var(--danger);
 }
 
+/* ---- Prompt composer (issue #7) ---- */
+
+.prompt-composer {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-panel);
+  margin-bottom: 1rem;
+}
+
+.prompt-composer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.5rem 0.75rem;
+  background: var(--bg-panel-alt);
+  border-bottom: 1px solid var(--border);
+  border-radius: 6px 6px 0 0;
+}
+
+.prompt-composer-title {
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+.prompt-composer-toggle {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 0.7rem;
+}
+
+.prompt-composer-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  padding: 0.75rem;
+}
+
+.prompt-composer-body[hidden] {
+  display: none;
+}
+
+.prompt-composer-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+  gap: 0.6rem;
+}
+
+.prompt-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.8rem;
+  color: var(--text-dim);
+  min-width: 0;
+}
+
+/* An author-stylesheet `display` declaration always beats the user-agent
+   stylesheet's `[hidden] { display: none }`, regardless of selector
+   specificity -- so without this override, `.prompt-field`'s own `display:
+   flex` above would silently cancel the `hidden` attribute JS toggles on
+   `#prompt-filename-field` (app.js's `updatePromptFilenameVisibility`),
+   leaving it visible at all times. */
+.prompt-field[hidden] {
+  display: none;
+}
+
+.prompt-field-wide {
+  grid-column: 1 / -1;
+}
+
+.prompt-field select,
+.prompt-field input[type="text"],
+.prompt-field textarea {
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 4px;
+  padding: 0.35rem 0.5rem;
+  font-size: 0.85rem;
+  font-family: inherit;
+}
+
+.prompt-field textarea {
+  resize: vertical;
+}
+
+/* Selector needs to be at least as specific as ".prompt-field textarea"
+   above (0,1,1) to actually win the cascade -- ".prompt-result" alone (0,1,0)
+   would lose to it and never apply, since #prompt-result is itself a
+   ".prompt-field textarea". */
+.prompt-field textarea.prompt-result {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  line-height: 1.5;
+}
+
+.prompt-field select:focus-visible,
+.prompt-field input[type="text"]:focus-visible,
+.prompt-field textarea:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.prompt-composer-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.prompt-generate-button {
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  color: var(--accent-text);
+  border-radius: 4px;
+  padding: 0.3rem 0.65rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.prompt-generate-button:hover {
+  filter: brightness(1.1);
+}
+
 /* ---- Content toolbar (global copy actions) ---- */
 
 .content-toolbar {
@@ -620,9 +745,26 @@ body.resizing {
   border-bottom: 1px solid var(--border);
 }
 
+.content-toolbar-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  min-width: 0;
+}
+
 .content-toolbar-count {
   color: var(--text-dim);
   font-size: 0.8rem;
+}
+
+/* Selection size statistics (issue #8): file/character/token counts. */
+.content-toolbar-stats {
+  color: var(--text-dim);
+  font-size: 0.75rem;
+}
+
+.content-toolbar-stats-warning {
+  color: var(--warning);
 }
 
 /* ---- Copy toast (fallback for a copy button detached mid-copy) ----

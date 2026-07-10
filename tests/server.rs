@@ -130,6 +130,28 @@ impl ScratchDir {
     fn path(&self) -> &Path {
         &self.0
     }
+
+    /// Runs a Git command against this directory, panicking if it fails.
+    /// Only used by the `/api/diff` tests below; every other test leaves
+    /// `ScratchDir` as a plain (non-Git) directory.
+    fn git(&self, args: &[&str]) {
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&self.0)
+            .args(args)
+            .status()
+            .expect("git should be installed and runnable");
+        assert!(status.success(), "git {args:?} should succeed");
+    }
+
+    /// Initializes this directory as a Git repository with a local identity
+    /// configured (so `git commit` works even in a CI environment with no
+    /// global `user.name`/`user.email` set).
+    fn git_init(&self) {
+        self.git(&["init", "-q"]);
+        self.git(&["config", "user.email", "test@example.com"]);
+        self.git(&["config", "user.name", "Test"]);
+    }
 }
 
 impl Drop for ScratchDir {
@@ -1059,6 +1081,152 @@ async fn api_file_returns_200_for_a_multi_megabyte_text_file() {
         response.lines().next().unwrap_or_default()
     );
     assert_eq!(body_of(&response), content);
+
+    server.abort();
+}
+
+// ---- /api/diff ----
+
+#[tokio::test]
+async fn api_diff_returns_200_and_json_content_type_for_valid_token() {
+    let (addr, token, server) = spawn_test_server().await;
+
+    let response = get(addr, &format!("/{token}/api/diff")).await;
+    assert!(
+        response.starts_with("HTTP/1.1 200"),
+        "expected 200 for a valid token's api/diff, got: {response}"
+    );
+    assert!(
+        headers_of(&response).contains("content-type: application/json"),
+        "expected a JSON content type header, got headers: {}",
+        headers_of(&response)
+    );
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn api_diff_returns_404_for_wrong_token() {
+    let (addr, _token, server) = spawn_test_server().await;
+
+    let response = get(addr, "/not-the-session-token/api/diff").await;
+    assert!(
+        response.starts_with("HTTP/1.1 404"),
+        "expected 404 for api/diff with the wrong token, got: {response}"
+    );
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn api_diff_returns_405_for_post() {
+    let (addr, token, server) = spawn_test_server().await;
+
+    let response = request(addr, "POST", &format!("/{token}/api/diff")).await;
+    assert!(
+        response.starts_with("HTTP/1.1 405"),
+        "expected 405 for a POST to api/diff, got: {response}"
+    );
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn api_diff_returns_404_for_extra_path_segment() {
+    let (addr, token, server) = spawn_test_server().await;
+
+    let response = get(addr, &format!("/{token}/api/diff/extra")).await;
+    assert!(
+        response.starts_with("HTTP/1.1 404"),
+        "expected 404 for api/diff with an extra path segment, got: {response}"
+    );
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn api_diff_reports_is_git_repo_false_and_empty_diff_for_a_non_git_root() {
+    let scratch = ScratchDir::new("diff-non-git");
+    fs::write(scratch.path().join("a.txt"), "hello").unwrap();
+    let (addr, token, server) = spawn_test_server_with_root(scratch.path().to_path_buf()).await;
+
+    let response = get(addr, &format!("/{token}/api/diff")).await;
+    let body = body_of(&response);
+    let parsed: serde_json::Value = serde_json::from_str(body)
+        .unwrap_or_else(|err| panic!("body should be valid JSON: {err}, body: {body}"));
+
+    assert_eq!(parsed["isGitRepo"], false);
+    assert_eq!(parsed["diff"], "");
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn api_diff_reports_is_git_repo_true_and_empty_diff_for_a_clean_repo() {
+    let scratch = ScratchDir::new("diff-clean");
+    scratch.git_init();
+    fs::write(scratch.path().join("a.txt"), "hello\n").unwrap();
+    scratch.git(&["add", "-A"]);
+    scratch.git(&["commit", "-q", "-m", "init"]);
+    let (addr, token, server) = spawn_test_server_with_root(scratch.path().to_path_buf()).await;
+
+    let response = get(addr, &format!("/{token}/api/diff")).await;
+    let body = body_of(&response);
+    let parsed: serde_json::Value = serde_json::from_str(body)
+        .unwrap_or_else(|err| panic!("body should be valid JSON: {err}, body: {body}"));
+
+    assert_eq!(parsed["isGitRepo"], true);
+    assert_eq!(parsed["diff"], "");
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn api_diff_includes_modified_added_deleted_and_untracked_files() {
+    let scratch = ScratchDir::new("diff-full");
+    scratch.git_init();
+    fs::write(scratch.path().join("modified.txt"), "before\n").unwrap();
+    fs::write(scratch.path().join("deleted.txt"), "gone\n").unwrap();
+    scratch.git(&["add", "-A"]);
+    scratch.git(&["commit", "-q", "-m", "init"]);
+
+    fs::write(scratch.path().join("modified.txt"), "after\n").unwrap();
+    fs::remove_file(scratch.path().join("deleted.txt")).unwrap();
+    fs::write(scratch.path().join("added.txt"), "staged\n").unwrap();
+    scratch.git(&["add", "added.txt"]);
+    fs::write(scratch.path().join("untracked.txt"), "loose\n").unwrap();
+
+    let (addr, token, server) = spawn_test_server_with_root(scratch.path().to_path_buf()).await;
+
+    let response = get(addr, &format!("/{token}/api/diff")).await;
+    let body = body_of(&response);
+    let parsed: serde_json::Value = serde_json::from_str(body)
+        .unwrap_or_else(|err| panic!("body should be valid JSON: {err}, body: {body}"));
+
+    assert_eq!(parsed["isGitRepo"], true);
+    let diff = parsed["diff"].as_str().expect("diff should be a string");
+
+    assert!(diff.contains("diff --git a/modified.txt b/modified.txt"));
+    assert!(diff.contains("-before"));
+    assert!(diff.contains("+after"));
+
+    assert!(diff.contains("diff --git a/deleted.txt b/deleted.txt"));
+    assert!(diff.contains("deleted file mode"));
+
+    assert!(diff.contains("diff --git a/added.txt b/added.txt"));
+    assert!(diff.contains("new file mode"));
+    assert!(diff.contains("+staged"));
+
+    assert!(diff.contains("diff --git a/untracked.txt b/untracked.txt"));
+    assert!(diff.contains("+loose"));
+
+    // Every file's own header appears exactly once: boundaries between the
+    // four changed files stay unambiguous rather than running together.
+    assert_eq!(
+        diff.matches("diff --git a/").count(),
+        4,
+        "diff body: {diff}"
+    );
 
     server.abort();
 }

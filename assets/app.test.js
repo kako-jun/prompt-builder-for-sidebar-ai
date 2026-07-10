@@ -31,6 +31,19 @@ import {
   copyTextToClipboard,
   fetchFileContents,
   formatLabel,
+  PROMPT_GOALS,
+  PROMPT_TARGETS,
+  PROMPT_OUTPUTS,
+  PROMPT_CONTEXT_MODES,
+  describePromptTarget,
+  describePromptOutput,
+  buildPromptContextSection,
+  buildPromptText,
+  formatInlineCode,
+  sliceSelectedLines,
+  computeSelectionStats,
+  formatWithThousandsSeparator,
+  formatSelectionStats,
 } from "./app.js";
 
 // ---- extensionOf ----
@@ -903,6 +916,164 @@ describe("markdownFenceFor", () => {
   });
 });
 
+// ---- formatInlineCode ----
+
+describe("formatInlineCode", () => {
+  test("wraps plain text with a single backtick on each side", () => {
+    assert.equal(formatInlineCode("output.md"), "`output.md`");
+  });
+
+  test("escalates to a double backtick when the text contains an internal single backtick", () => {
+    // A bare "`out`put.md`" would prematurely close after "out"; escalating
+    // to a 2-backtick fence prevents that. No padding is needed here since
+    // the backtick isn't at either boundary.
+    assert.equal(formatInlineCode("out`put.md"), "``out`put.md``");
+  });
+
+  test("pads a leading/trailing backtick even when no fence escalation is otherwise needed", () => {
+    assert.equal(formatInlineCode("`leading"), "`` `leading ``");
+    assert.equal(formatInlineCode("trailing`"), "`` trailing` ``");
+  });
+
+  test("escalates based on the longest consecutive internal run, matching markdownFenceFor's rule", () => {
+    assert.equal(formatInlineCode("a``b"), "```a``b```");
+  });
+});
+
+// ---- sliceSelectedLines ----
+
+describe("sliceSelectedLines", () => {
+  test("returns the single requested line for start === end", () => {
+    assert.equal(sliceSelectedLines("a\nb\nc\n", 2, 2), "b");
+  });
+
+  test("returns an inclusive multi-line range", () => {
+    assert.equal(sliceSelectedLines("a\nb\nc\nd\n", 2, 3), "b\nc");
+  });
+
+  test("drops a trailing empty line from a final newline before slicing", () => {
+    // Without dropping it, "a\nb\n".split("\n") is ["a", "b", ""] and a
+    // range covering the last real line would still work here, but the line
+    // *count* would be wrong by one -- this is the same rule buildCodeLines
+    // uses for its displayed line numbers, so a selection's line numbers and
+    // this slice have to agree on what "line 2" means.
+    assert.equal(sliceSelectedLines("a\nb\n", 1, 2), "a\nb");
+  });
+
+  test("handles content with no trailing newline the same way", () => {
+    assert.equal(sliceSelectedLines("a\nb\nc", 1, 3), "a\nb\nc");
+  });
+});
+
+// ---- Selection size statistics (issue #8) ----
+
+describe("computeSelectionStats", () => {
+  test("returns all zeros for an empty selection", () => {
+    const stats = computeSelectionStats([], new Map());
+    assert.deepEqual(stats, {
+      fileCount: 0,
+      pendingCount: 0,
+      charCount: 0,
+      estimatedTokens: 0,
+      isLarge: false,
+    });
+  });
+
+  test("sums character counts across every checked path with cached content", () => {
+    const cache = new Map([
+      ["a.js", "1234"],
+      ["b.js", "12345678"],
+    ]);
+    const stats = computeSelectionStats(["a.js", "b.js"], cache);
+    assert.equal(stats.fileCount, 2);
+    assert.equal(stats.pendingCount, 0);
+    assert.equal(stats.charCount, 12);
+  });
+
+  test("counts a checked path with no cache entry yet as pending, not zero characters", () => {
+    const cache = new Map([["a.js", "1234"]]);
+    const stats = computeSelectionStats(["a.js", "still-loading.js"], cache);
+    assert.equal(stats.fileCount, 2);
+    assert.equal(stats.pendingCount, 1);
+    assert.equal(stats.charCount, 4);
+  });
+
+  test("rounds the estimated token count up, never truncating a partial token to zero", () => {
+    const stats = computeSelectionStats(["a.js"], new Map([["a.js", "12345"]]));
+    // 5 characters / 4 chars-per-token = 1.25 -> should round up to 2, not
+    // truncate down to 1.
+    assert.equal(stats.estimatedTokens, 2);
+  });
+
+  test("flags isLarge only once character count exceeds the threshold", () => {
+    const justUnder = computeSelectionStats(["a.js"], new Map([["a.js", "x".repeat(200_000)]]));
+    assert.equal(justUnder.isLarge, false);
+
+    const over = computeSelectionStats(["a.js"], new Map([["a.js", "x".repeat(200_001)]]));
+    assert.equal(over.isLarge, true);
+  });
+});
+
+describe("formatWithThousandsSeparator", () => {
+  test("leaves a number under 1000 unchanged", () => {
+    assert.equal(formatWithThousandsSeparator(42), "42");
+  });
+
+  test("inserts a comma every three digits", () => {
+    assert.equal(formatWithThousandsSeparator(1234567), "1,234,567");
+  });
+
+  test("handles exactly three digits with no leading comma", () => {
+    assert.equal(formatWithThousandsSeparator(999), "999");
+    assert.equal(formatWithThousandsSeparator(1000), "1,000");
+  });
+
+  test("handles zero", () => {
+    assert.equal(formatWithThousandsSeparator(0), "0");
+  });
+});
+
+describe("formatSelectionStats", () => {
+  test("reports 'No files selected.' for an empty selection", () => {
+    const stats = computeSelectionStats([], new Map());
+    assert.equal(formatSelectionStats(stats), "No files selected.");
+  });
+
+  test("uses singular phrasing for exactly one file", () => {
+    const stats = computeSelectionStats(["a.js"], new Map([["a.js", "abcd"]]));
+    assert.match(formatSelectionStats(stats), /^1 file selected/);
+  });
+
+  test("uses plural phrasing for more than one file", () => {
+    const stats = computeSelectionStats(
+      ["a.js", "b.js"],
+      new Map([
+        ["a.js", "ab"],
+        ["b.js", "cd"],
+      ])
+    );
+    assert.match(formatSelectionStats(stats), /^2 files selected/);
+  });
+
+  test("notes a pending count when some checked files haven't loaded yet", () => {
+    const stats = computeSelectionStats(["a.js", "b.js"], new Map([["a.js", "abcd"]]));
+    assert.match(formatSelectionStats(stats), /\(1 still loading\)/);
+  });
+
+  test("omits the pending note once every checked file has loaded", () => {
+    const stats = computeSelectionStats(["a.js"], new Map([["a.js", "abcd"]]));
+    assert.doesNotMatch(formatSelectionStats(stats), /still loading/);
+  });
+
+  test("includes a large-selection warning only when isLarge is true", () => {
+    const small = computeSelectionStats(["a.js"], new Map([["a.js", "abcd"]]));
+    assert.doesNotMatch(formatSelectionStats(small), /large selection/);
+
+    const large = computeSelectionStats(["a.js"], new Map([["a.js", "x".repeat(200_001)]]));
+    assert.match(formatSelectionStats(large), /⚠ large selection$/);
+  });
+});
+
 // ---- formatSingleFile ----
 
 describe("formatSingleFile", () => {
@@ -1376,5 +1547,310 @@ describe("formatLabel", () => {
 
   test("falls back to 'Plain' for undefined", () => {
     assert.equal(formatLabel(undefined), "Plain");
+  });
+});
+
+// ---- Prompt composer (issue #7) ----
+
+describe("describePromptTarget", () => {
+  test("describes 'page' without needing any data", () => {
+    assert.match(describePromptTarget("page"), /whole page/);
+  });
+
+  test("lists checked-file refs for 'checked' when some are checked", () => {
+    const description = describePromptTarget("checked", {
+      checkedRefs: ["@file:a.js", "@file:b.js"],
+    });
+    assert.match(description, /@file:a\.js, @file:b\.js/);
+  });
+
+  test("falls back to an explanatory phrase for 'checked' with nothing checked", () => {
+    const description = describePromptTarget("checked", { checkedRefs: [] });
+    assert.match(description, /none are currently checked/);
+  });
+
+  test("lists line refs for 'lines' when a selection exists, pluralizing for more than one", () => {
+    const one = describePromptTarget("lines", { lineRefs: ["@lines:a.js#L1-L2"] });
+    assert.match(one, /selected line range: @lines:a\.js#L1-L2/);
+
+    const many = describePromptTarget("lines", {
+      lineRefs: ["@lines:a.js#L1-L2", "@lines:b.js#L3"],
+    });
+    assert.match(many, /selected line ranges: @lines:a\.js#L1-L2, @lines:b\.js#L3/);
+  });
+
+  test("falls back to an explanatory phrase for 'lines' with nothing selected", () => {
+    const description = describePromptTarget("lines", { lineRefs: [] });
+    assert.match(description, /no lines are currently selected/);
+  });
+
+  test("describes 'diff' without needing any data", () => {
+    assert.match(describePromptTarget("diff"), /current Git diff/);
+  });
+
+  test("defaults unrecognized targets to the 'page' description", () => {
+    assert.equal(describePromptTarget("bogus"), describePromptTarget("page"));
+  });
+
+  test("tolerates being called with no data argument at all", () => {
+    assert.doesNotThrow(() => describePromptTarget("checked"));
+    assert.doesNotThrow(() => describePromptTarget("lines"));
+  });
+});
+
+describe("describePromptOutput", () => {
+  test("returns the fixed instruction for each non-file output", () => {
+    for (const { value } of PROMPT_OUTPUTS) {
+      if (value === "file") continue;
+      assert.equal(typeof describePromptOutput(value), "string");
+      assert.ok(describePromptOutput(value).length > 0);
+    }
+  });
+
+  test("embeds a given filename for 'file'", () => {
+    assert.equal(
+      describePromptOutput("file", "test-spec.md"),
+      "Generate the response as a downloadable file named `test-spec.md`."
+    );
+  });
+
+  test("trims whitespace around a given filename", () => {
+    assert.equal(
+      describePromptOutput("file", "  test-spec.md  "),
+      "Generate the response as a downloadable file named `test-spec.md`."
+    );
+  });
+
+  test("falls back to 'output.md' for an empty/blank filename", () => {
+    assert.match(describePromptOutput("file", ""), /output\.md/);
+    assert.match(describePromptOutput("file", "   "), /output\.md/);
+    assert.match(describePromptOutput("file", undefined), /output\.md/);
+  });
+
+  test("falls back to the 'concise' instruction for an unrecognized output", () => {
+    assert.equal(describePromptOutput("bogus"), describePromptOutput("concise"));
+  });
+
+  test("escapes a backtick in a given filename so it can't prematurely close the code span", () => {
+    // Without escaping, "out`put.md" wrapped in a single-backtick span would
+    // read as "`out`" (closing early) followed by stray "put.md`" text.
+    const text = describePromptOutput("file", "out`put.md");
+    assert.equal(text, "Generate the response as a downloadable file named ``out`put.md``.");
+  });
+});
+
+describe("buildPromptContextSection", () => {
+  test("returns an empty string for 'page' regardless of entries (non-diff target)", () => {
+    assert.equal(buildPromptContextSection("page", [{ ref: "@file:a.js", content: "x" }]), "");
+    assert.equal(buildPromptContextSection("page", []), "");
+  });
+
+  test("embeds every entry, fenced and language-tagged via formatReferenceWithCode, under a '## Context' heading for 'excerpts'/'full'", () => {
+    const entries = [
+      { ref: "@file:a.js", content: "const a = 1;" },
+      { ref: "@lines:b.js#L1-L2", content: "const b = 2;" },
+    ];
+    for (const mode of ["excerpts", "full"]) {
+      const section = buildPromptContextSection(mode, entries);
+      assert.match(section, /^## Context/);
+      assert.match(section, /### @file:a\.js/);
+      assert.match(section, /```javascript/);
+      assert.match(section, /const a = 1;/);
+      assert.match(section, /### @lines:b\.js#L1-L2/);
+      assert.match(section, /const b = 2;/);
+    }
+  });
+
+  test("a context entry's own Markdown/backticks can't corrupt the surrounding prompt structure", () => {
+    // Regression guard for hand-rolled `### ${ref}\n\n${content}` formatting,
+    // which embedded content raw with no fence at all -- a checked file
+    // containing its own "```" block or a "## Context"-looking heading would
+    // visually merge with the composer's own section structure. Routing
+    // through formatReferenceWithCode wraps the entry in a fence escalated
+    // past its own embedded 3-backtick run (to 4), so the entry's content
+    // stays unambiguously inside its own code block.
+    const entries = [{ ref: "@file:a.md", content: "## Context\n\n```\nnested\n```" }];
+    const section = buildPromptContextSection("full", entries);
+    assert.match(section, /````markdown\n/);
+    assert.match(section, /nested/);
+  });
+
+  test("returns an explanatory placeholder for 'excerpts' with no entries", () => {
+    assert.match(buildPromptContextSection("excerpts", []), /No line range is currently selected/);
+    assert.match(buildPromptContextSection("excerpts", undefined), /No line range is currently selected/);
+  });
+
+  test("returns an explanatory placeholder for 'full' with no entries", () => {
+    assert.match(buildPromptContextSection("full", []), /No files are currently checked/);
+  });
+
+  test("target 'diff' with context mode 'page' never embeds the diff, and explains why instead", () => {
+    // Deliberately does not depend on contextEntries at all: "page" means
+    // "don't embed anything" for target diff just like it does for every
+    // other target, even if real diff content was already fetched.
+    const section = buildPromptContextSection(
+      "page",
+      [{ content: "diff --git a/x b/x\n+added", isDiff: true }],
+      "diff"
+    );
+    assert.match(section, /Page context only.*can't include it here/s);
+    assert.doesNotMatch(section, /diff --git a\/x b\/x/);
+    assert.doesNotMatch(section, /## Context/);
+  });
+
+  test("target 'diff' with context mode 'excerpts'/'full' embeds real diff content under a '## Context' heading, in a 'diff'-tagged fence", () => {
+    for (const mode of ["excerpts", "full"]) {
+      const section = buildPromptContextSection(
+        mode,
+        [{ content: "diff --git a/x b/x\n+added", isDiff: true }],
+        "diff"
+      );
+      assert.match(section, /^## Context/);
+      assert.match(section, /### Git diff/);
+      assert.match(section, /```diff\n/);
+      assert.match(section, /diff --git a\/x b\/x/);
+      assert.match(section, /\+added/);
+    }
+  });
+
+  test("target 'diff' with context mode 'excerpts'/'full' embeds an explanatory (non-diff) entry as plain text, not inside a diff fence", () => {
+    for (const mode of ["excerpts", "full"]) {
+      const section = buildPromptContextSection(
+        mode,
+        [{ content: "(No local changes: the working tree is clean.)", isDiff: false }],
+        "diff"
+      );
+      assert.equal(section, "(No local changes: the working tree is clean.)");
+      assert.doesNotMatch(section, /```/);
+      assert.doesNotMatch(section, /## Context/);
+    }
+  });
+
+  test("target 'diff' falls back to an explanatory placeholder when no entry is given at all", () => {
+    for (const mode of ["excerpts", "full"]) {
+      assert.match(buildPromptContextSection(mode, [], "diff"), /No Git diff information is available/);
+      assert.match(buildPromptContextSection(mode, undefined, "diff"), /No Git diff information is available/);
+    }
+  });
+
+  test("target 'diff' escalates the fence past any '```' already inside the diff content", () => {
+    const section = buildPromptContextSection(
+      "full",
+      [{ content: "some content with ```\nembedded fence", isDiff: true }],
+      "diff"
+    );
+    assert.match(section, /````diff\n/);
+  });
+});
+
+describe("buildPromptText", () => {
+  test("produces a coherent, complete prompt for every goal x target x output x context-mode combination", () => {
+    const checkedRefs = ["@file:src/app.js"];
+    const lineRefs = ["@lines:src/app.js#L1-L3"];
+    const contextEntries = [{ ref: "@file:src/app.js", content: "console.log(1);" }];
+
+    for (const { value: goal } of PROMPT_GOALS) {
+      for (const { value: target } of PROMPT_TARGETS) {
+        for (const { value: output } of PROMPT_OUTPUTS) {
+          for (const { value: contextMode } of PROMPT_CONTEXT_MODES) {
+            const text = buildPromptText({
+              goal,
+              target,
+              output,
+              contextMode,
+              filename: "result.md",
+              extraInstructions: "",
+              checkedRefs,
+              lineRefs,
+              contextEntries,
+            });
+            assert.equal(typeof text, "string");
+            assert.ok(text.trim().length > 0, `${goal}/${target}/${output}/${contextMode} was empty`);
+            assert.match(text, /Target:/);
+          }
+        }
+      }
+    }
+  });
+
+  test("degrades gracefully with nothing checked/selected and no context entries at all", () => {
+    for (const { value: contextMode } of PROMPT_CONTEXT_MODES) {
+      const text = buildPromptText({
+        goal: "explain",
+        target: "checked",
+        output: "concise",
+        contextMode,
+        filename: "",
+        extraInstructions: "",
+        checkedRefs: [],
+        lineRefs: [],
+        contextEntries: [],
+      });
+      assert.ok(text.trim().length > 0);
+    }
+  });
+
+  test("includes trimmed additional instructions when given, and omits the section when blank", () => {
+    const withExtra = buildPromptText({
+      goal: "explain",
+      target: "page",
+      output: "concise",
+      contextMode: "page",
+      extraInstructions: "  Focus on error handling.  ",
+    });
+    assert.match(withExtra, /Additional instructions:\nFocus on error handling\./);
+
+    const withoutExtra = buildPromptText({
+      goal: "explain",
+      target: "page",
+      output: "concise",
+      contextMode: "page",
+      extraInstructions: "   ",
+    });
+    assert.doesNotMatch(withoutExtra, /Additional instructions:/);
+  });
+
+  test("always mentions the stable-reference convention", () => {
+    const text = buildPromptText({ goal: "explain", target: "page", output: "concise", contextMode: "page" });
+    assert.match(text, /@file:\.\.\., @dir:\.\.\., @lines:\.\.\./);
+  });
+
+  test("embeds a filename instruction for 'file' output", () => {
+    const text = buildPromptText({
+      goal: "plan",
+      target: "page",
+      output: "file",
+      contextMode: "page",
+      filename: "plan.md",
+    });
+    assert.match(text, /downloadable file named `plan\.md`/);
+  });
+
+  test("embeds real diff content for target 'diff' in context modes 'excerpts'/'full'", () => {
+    for (const contextMode of ["excerpts", "full"]) {
+      const text = buildPromptText({
+        goal: "review",
+        target: "diff",
+        output: "concise",
+        contextMode,
+        contextEntries: [{ content: "diff --git a/x b/x\n+added line", isDiff: true }],
+      });
+      assert.match(text, /## Context/);
+      assert.match(text, /diff --git a\/x b\/x/);
+      assert.match(text, /\+added line/);
+    }
+  });
+
+  test("target 'diff' with context mode 'page' explains why the diff isn't embedded, instead of overriding the user's choice", () => {
+    const text = buildPromptText({
+      goal: "review",
+      target: "diff",
+      output: "concise",
+      contextMode: "page",
+      contextEntries: [{ content: "diff --git a/x b/x\n+added line", isDiff: true }],
+    });
+    assert.doesNotMatch(text, /## Context/);
+    assert.doesNotMatch(text, /diff --git a\/x b\/x/);
+    assert.match(text, /Page context only/);
   });
 });

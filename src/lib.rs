@@ -6,12 +6,14 @@ use axum::{
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use uuid::Uuid;
 
+pub mod diff;
 pub mod discovery;
 
+use diff::compute_diff;
 use discovery::{discover_tree, is_probably_binary, FileEntry};
 
 /// HTML shell template embedded in the binary. `/*__STYLE_PLACEHOLDER__*/`
@@ -84,6 +86,7 @@ pub fn build_router(token: &str, root: PathBuf) -> Router {
         .route(&format!("/{token}/api/root"), get(serve_root))
         .route(&format!("/{token}/api/tree"), get(serve_tree))
         .route(&format!("/{token}/api/file"), get(serve_file))
+        .route(&format!("/{token}/api/diff"), get(serve_diff))
         .fallback(not_found)
         .with_state(state)
 }
@@ -137,7 +140,9 @@ struct FileQuery {
 /// result (which would let a request "probe" whether something exists
 /// outside the root, and would not notice a symlink that happens to resolve
 /// back inside the root), the request path is validated one path component
-/// at a time:
+/// at a time (steps 1-3 below are implemented by
+/// [`discovery::resolve_regular_file`], shared with the Git-diff endpoint's
+/// untracked-file handling in `src/diff.rs` so both enforce identical rules):
 ///
 /// 1. Every component of the untrusted `path` query value must be
 ///    [`Component::Normal`]. A `..` (`ParentDir`), a leading `/`
@@ -200,30 +205,16 @@ async fn serve_file(State(root): State<Arc<PathBuf>>, Query(query): Query<FileQu
         }
     };
 
-    // Build the candidate path one `Normal` component at a time, checking at
-    // every step that the component neither escapes the root (by rejecting
-    // anything other than `Normal` outright, before touching the
-    // filesystem) nor passes through a symlink. See the function doc comment
-    // above for why this replaces the previous "join, canonicalize, then
-    // `starts_with`" approach.
-    let mut candidate = canonical_root.clone();
-    for component in Path::new(requested_path).components() {
-        let Component::Normal(part) = component else {
-            return (StatusCode::NOT_FOUND, "file not found").into_response();
-        };
-        candidate.push(part);
-        match std::fs::symlink_metadata(&candidate) {
-            Ok(metadata) if !metadata.file_type().is_symlink() => {}
-            _ => return (StatusCode::NOT_FOUND, "file not found").into_response(),
-        }
-    }
-
-    let is_regular_file = std::fs::metadata(&candidate)
-        .map(|metadata| metadata.file_type().is_file())
-        .unwrap_or(false);
-    if !is_regular_file {
+    // Validated one `Normal` path component at a time -- rejecting anything
+    // that would escape the root or pass through a symlink -- by
+    // `discovery::resolve_regular_file`. See the function doc comment above
+    // for why this replaces the previous "join, canonicalize, then
+    // `starts_with`" approach; see `resolve_regular_file`'s own doc comment
+    // for the exact rules (also shared by the Git-diff module's
+    // untracked-file handling, so both places enforce the identical policy).
+    let Some(candidate) = discovery::resolve_regular_file(&canonical_root, requested_path) else {
         return (StatusCode::NOT_FOUND, "file not found").into_response();
-    }
+    };
 
     match is_probably_binary(&candidate) {
         Ok(true) => {
@@ -249,6 +240,25 @@ async fn serve_file(State(root): State<Arc<PathBuf>>, Query(query): Query<FileQu
             .into_response(),
         Err(_) => (StatusCode::BAD_REQUEST, "file is not valid UTF-8").into_response(),
     }
+}
+
+/// Response body for `GET /{token}/api/diff`: see [`diff::compute_diff`] for
+/// what `isGitRepo`/`diff` mean and how each degrades gracefully (a
+/// non-Git root, a repository with no commits yet, a clean working tree with
+/// nothing to show).
+#[derive(Serialize)]
+struct DiffResponse {
+    #[serde(rename = "isGitRepo")]
+    is_git_repo: bool,
+    diff: String,
+}
+
+async fn serve_diff(State(root): State<Arc<PathBuf>>) -> impl IntoResponse {
+    let result = compute_diff(&root);
+    Json(DiffResponse {
+        is_git_repo: result.is_git_repo,
+        diff: result.diff,
+    })
 }
 
 async fn not_found() -> impl IntoResponse {
