@@ -56,6 +56,73 @@
       ></div>
 
       <main id="content-pane" class="content-pane">
+        <section id="prompt-composer" class="prompt-composer" aria-label="Prompt composer">
+          <div class="prompt-composer-header">
+            <h2 class="prompt-composer-title">Prompt composer</h2>
+            <button
+              type="button"
+              id="prompt-composer-toggle"
+              class="prompt-composer-toggle"
+              aria-expanded="true"
+              aria-label="Collapse prompt composer"
+            >▾</button>
+          </div>
+          <div id="prompt-composer-body" class="prompt-composer-body">
+            <div class="prompt-composer-fields">
+              <label class="prompt-field">
+                <span>Goal</span>
+                <select id="prompt-goal"></select>
+              </label>
+              <label class="prompt-field">
+                <span>Target</span>
+                <select id="prompt-target"></select>
+              </label>
+              <label class="prompt-field">
+                <span>Output</span>
+                <select id="prompt-output"></select>
+              </label>
+              <label id="prompt-filename-field" class="prompt-field" hidden>
+                <span>Filename</span>
+                <input
+                  id="prompt-filename"
+                  type="text"
+                  placeholder="e.g. test-spec.md"
+                  autocomplete="off"
+                  spellcheck="false"
+                />
+              </label>
+              <label class="prompt-field">
+                <span>Context mode</span>
+                <select id="prompt-context-mode"></select>
+              </label>
+            </div>
+
+            <label class="prompt-field prompt-field-wide">
+              <span>Additional instructions (optional)</span>
+              <textarea id="prompt-extra" rows="2"></textarea>
+            </label>
+
+            <div class="prompt-composer-actions">
+              <button type="button" id="prompt-generate" class="prompt-generate-button">
+                Generate prompt
+              </button>
+              <button type="button" id="prompt-copy" class="copy-button copy-button-primary">
+                Copy prompt
+              </button>
+            </div>
+
+            <label class="prompt-field prompt-field-wide">
+              <span>Generated prompt (editable)</span>
+              <textarea
+                id="prompt-result"
+                class="prompt-result"
+                rows="10"
+                placeholder="Choose options above and click “Generate prompt”."
+              ></textarea>
+            </label>
+          </div>
+        </section>
+
         <div id="content-toolbar" class="content-toolbar">
           <span id="content-toolbar-count" class="content-toolbar-count"></span>
           <div id="content-toolbar-actions" class="content-toolbar-actions"></div>

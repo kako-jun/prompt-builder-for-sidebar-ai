@@ -65,6 +65,7 @@ async function init() {
   wireResizer();
   wireHashNavigation();
   wireCopyMenuDismissal();
+  wirePromptComposer();
   renderRecentList();
   renderContentToolbar();
   await Promise.all([loadRoot(), loadTree()]);
@@ -708,6 +709,184 @@ export function formatReferenceWithCode(ref, content, format) {
     default:
       return `${ref}\n${content}`;
   }
+}
+
+// ---- Prompt composer (issue #7) ----
+//
+// Builds an editable prompt from four choices (goal, target, output, context
+// mode) plus free-form additional instructions, per issue #1/#7. The pure
+// pieces here (option lists, `describePromptTarget`/`describePromptOutput`/
+// `buildPromptContextSection`/`buildPromptText`) never touch the DOM or the
+// network -- they take already-resolved data (refs, fetched file content) and
+// return a string, so the composer's actual text generation is fully testable
+// without a browser. The DOM/fetch-touching glue (`generatePrompt` and
+// friends, further down) is a thin wrapper that gathers that data from
+// `state` and calls these.
+
+export const PROMPT_GOALS = [
+  { value: "locate", label: "Find relevant code" },
+  { value: "explain", label: "Explain code" },
+  { value: "investigate-bug", label: "Investigate a bug or its impact" },
+  { value: "review", label: "Review design or security" },
+  { value: "extract-tests", label: "Extract test cases" },
+  { value: "refactor", label: "Suggest refactoring" },
+  { value: "plan", label: "Plan implementation" },
+];
+
+const PROMPT_GOAL_INSTRUCTIONS = {
+  locate: "Locate the code and functions most relevant to the request below.",
+  explain: "Explain what this code does and how it works.",
+  "investigate-bug":
+    "Investigate the described bug (or its impact), including its likely root cause.",
+  review: "Review this code's design and/or security, and list any concerns.",
+  "extract-tests": "Extract or propose test cases that cover this code's behavior.",
+  refactor: "Suggest refactoring opportunities here and explain why each would help.",
+  plan: "Produce an implementation plan for the request below.",
+};
+
+export const PROMPT_TARGETS = [
+  { value: "page", label: "Whole page" },
+  { value: "checked", label: "Checked files" },
+  { value: "lines", label: "Selected lines" },
+  { value: "diff", label: "Git diff" },
+];
+
+export const PROMPT_OUTPUTS = [
+  { value: "concise", label: "Concise answer" },
+  { value: "report", label: "Investigation report" },
+  { value: "issue", label: "GitHub issue" },
+  { value: "instructions", label: "Implementation instructions" },
+  { value: "checklist", label: "Checklist" },
+  { value: "diff", label: "Unified diff" },
+  { value: "file", label: "Downloadable file" },
+];
+
+const PROMPT_OUTPUT_INSTRUCTIONS = {
+  concise: "Respond with a concise answer.",
+  report: "Respond with a structured investigation report.",
+  issue: "Respond with a GitHub issue, ready to file, with a clear title and body.",
+  instructions: "Respond with step-by-step instructions for an implementation agent.",
+  checklist: "Respond with a checklist.",
+  diff: "Respond with a unified diff.",
+};
+
+export const PROMPT_CONTEXT_MODES = [
+  { value: "page", label: "Page context only" },
+  { value: "excerpts", label: "Referenced excerpts" },
+  { value: "full", label: "Full selected files" },
+];
+
+/** Describes what `target` refers to, in a form that reads naturally inside
+ * a sentence (no trailing period). `data.checkedRefs`/`data.lineRefs` are the
+ * already-formatted `@file:...`/`@lines:...` reference strings for the
+ * "checked" and "lines" targets respectively; each degrades to an
+ * explanatory fallback phrase (rather than an empty/misleading list) when
+ * nothing is currently checked/selected, so the resulting prompt still reads
+ * as a coherent sentence in that state. */
+export function describePromptTarget(target, data = {}) {
+  const checkedRefs = data.checkedRefs || [];
+  const lineRefs = data.lineRefs || [];
+
+  switch (target) {
+    case "checked":
+      return checkedRefs.length > 0
+        ? `the checked files: ${checkedRefs.join(", ")}`
+        : "the checked files (none are currently checked -- check some files in the explorer first)";
+    case "lines":
+      return lineRefs.length > 0
+        ? `the selected line range${lineRefs.length > 1 ? "s" : ""}: ${lineRefs.join(", ")}`
+        : "the selected line range (no lines are currently selected -- click a line number in an open file first)";
+    case "diff":
+      return "the current Git diff of this project";
+    case "page":
+    default:
+      return "the whole page (everything currently visible in this browser tab)";
+  }
+}
+
+/** Describes the requested output shape as a standalone instruction sentence.
+ * "file" is special-cased since it also needs `filename`; an empty/blank
+ * `filename` falls back to "output.md" so the instruction is always a
+ * complete, valid sentence rather than naming an empty file. */
+export function describePromptOutput(output, filename) {
+  if (output === "file") {
+    const name = filename && filename.trim() ? filename.trim() : "output.md";
+    return `Generate the response as a downloadable file named \`${name}\`.`;
+  }
+  return PROMPT_OUTPUT_INSTRUCTIONS[output] || PROMPT_OUTPUT_INSTRUCTIONS.concise;
+}
+
+/** Builds the "## Context" section embedding `contextEntries` (`{ ref,
+ * content }[]`, already fetched/sliced by the caller), or `""` when
+ * `contextMode` is "page" (context mode "page context only" means: rely on
+ * the sidebar AI reading the live page itself, so nothing gets embedded in
+ * the copied text at all). When `contextMode` calls for embedded content but
+ * none was gathered (nothing selected/checked yet), returns an explanatory
+ * placeholder instead of an empty/misleading section, so the caller doesn't
+ * have to special-case "mode wants content but there isn't any" itself. */
+export function buildPromptContextSection(contextMode, contextEntries) {
+  if (contextMode === "page") return "";
+
+  if (!contextEntries || contextEntries.length === 0) {
+    return contextMode === "excerpts"
+      ? '(No line range is currently selected, so no excerpt could be embedded here. Select one first, or switch context mode to "Page context only".)'
+      : '(No files are currently checked, so no content could be embedded here. Check some files first, or switch context mode to "Page context only".)';
+  }
+
+  const body = contextEntries.map((entry) => `### ${entry.ref}\n\n${entry.content}`).join("\n\n");
+  return `## Context\n\n${body}`;
+}
+
+/** Assembles the full editable prompt text from every composer choice. Pure
+ * and DOM-free: `checkedRefs`/`lineRefs`/`contextEntries` are already-resolved
+ * data (see the section comment above), not derived here. Every
+ * goal/target/output/context-mode combination -- including every "nothing
+ * selected yet" edge case -- is expected to produce a complete, coherent
+ * block of text; degrading gracefully rather than omitting a section is the
+ * job of `describePromptTarget`/`buildPromptContextSection` above. */
+export function buildPromptText(options) {
+  const {
+    goal,
+    target,
+    output,
+    contextMode,
+    filename,
+    extraInstructions,
+    checkedRefs = [],
+    lineRefs = [],
+    contextEntries = [],
+  } = options;
+
+  const parts = [
+    PROMPT_GOAL_INSTRUCTIONS[goal] || PROMPT_GOAL_INSTRUCTIONS.explain,
+    `Target: ${describePromptTarget(target, { checkedRefs, lineRefs })}.`,
+    describePromptOutput(output, filename),
+  ];
+
+  const trimmedExtra = (extraInstructions || "").trim();
+  if (trimmedExtra) {
+    parts.push(`Additional instructions:\n${trimmedExtra}`);
+  }
+
+  parts.push(
+    "When referring to a specific location in the code, use the stable references shown on the page (@file:..., @dir:..., @lines:...) so it can be traced back precisely."
+  );
+
+  if (target === "diff" && contextMode !== "page") {
+    // Git diff support doesn't exist yet (issue #8), so there is no diff
+    // content this composer could ever embed for the "excerpts"/"full"
+    // context modes -- state that plainly instead of silently embedding
+    // nothing, or embedding an unrelated file's content, under a "## Context"
+    // heading that would otherwise imply a diff is actually attached.
+    parts.push(
+      "Note: Git diff support isn't available in this tool yet, so no diff content could be embedded automatically here. Paste the diff manually if it's needed."
+    );
+  } else {
+    const contextSection = buildPromptContextSection(contextMode, contextEntries);
+    if (contextSection) parts.push(contextSection);
+  }
+
+  return parts.join("\n\n");
 }
 
 // ---- Search filter ----
@@ -1675,6 +1854,138 @@ export function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
 }
 
+// ---- Prompt composer (DOM wiring) ----
+//
+// Thin glue between the pure functions above and the page: populates the
+// four `<select>`s, gathers the current selection/checked/line-selection
+// state into the shape `buildPromptText` expects (fetching file content only
+// when the chosen context mode actually needs it embedded), and writes the
+// result into the editable result textarea. The "Copy prompt" button copies
+// the textarea's *current* value, not a freshly regenerated one, so a user's
+// manual edits are what actually gets copied and survive until "Generate
+// prompt" is clicked again (issue #7 acceptance criterion).
+
+function populateSelect(select, options) {
+  for (const option of options) {
+    const optionEl = document.createElement("option");
+    optionEl.value = option.value;
+    optionEl.textContent = option.label;
+    select.appendChild(optionEl);
+  }
+}
+
+function wirePromptComposer() {
+  populateSelect(el.promptGoal, PROMPT_GOALS);
+  populateSelect(el.promptTarget, PROMPT_TARGETS);
+  populateSelect(el.promptOutput, PROMPT_OUTPUTS);
+  populateSelect(el.promptContextMode, PROMPT_CONTEXT_MODES);
+
+  el.promptOutput.addEventListener("change", updatePromptFilenameVisibility);
+  updatePromptFilenameVisibility();
+
+  el.promptGenerate.addEventListener("click", () => {
+    generatePrompt();
+  });
+
+  el.promptCopy.addEventListener("click", () => {
+    copyToClipboardWithFeedback(el.promptResult.value, el.promptCopy);
+  });
+
+  el.promptComposerToggle.addEventListener("click", () => {
+    const collapsed = el.promptComposerBody.hidden;
+    el.promptComposerBody.hidden = !collapsed;
+    el.promptComposerToggle.textContent = collapsed ? "▾" : "▸";
+    el.promptComposerToggle.setAttribute("aria-expanded", String(collapsed));
+    el.promptComposerToggle.setAttribute(
+      "aria-label",
+      collapsed ? "Collapse prompt composer" : "Expand prompt composer"
+    );
+  });
+}
+
+function updatePromptFilenameVisibility() {
+  el.promptFilenameField.hidden = el.promptOutput.value !== "file";
+}
+
+/** Fetches every path in `lineSelectionEntries` (`[path, { start, end }][]`,
+ * from `state.lineSelections`) and slices each one down to just its selected
+ * range, returning `{ ref, content }[]` for `buildPromptContextSection`'s
+ * "excerpts" mode. Mirrors the line-slicing `copyReferenceWithCode` already
+ * does for a single file, generalized to every currently selected file at
+ * once. */
+async function gatherExcerptEntries(lineSelectionEntries) {
+  if (lineSelectionEntries.length === 0) return [];
+
+  const fetched = await fetchFileContents(lineSelectionEntries.map(([path]) => path));
+  const contentByPath = new Map(fetched.map((entry) => [entry.path, entry.content]));
+
+  return lineSelectionEntries.map(([path, selection]) => {
+    const lines = (contentByPath.get(path) || "").split("\n");
+    if (lines.length > 1 && lines[lines.length - 1] === "") lines.pop();
+    const excerpt = lines.slice(selection.start - 1, selection.end).join("\n");
+    return { ref: formatLinesRef(path, selection.start, selection.end), content: excerpt };
+  });
+}
+
+/** Fetches every path in `paths` in full, returning `{ ref, content }[]` for
+ * `buildPromptContextSection`'s "full" mode. */
+async function gatherFullFileEntries(paths) {
+  if (paths.length === 0) return [];
+  const fetched = await fetchFileContents(paths);
+  return fetched.map((entry) => ({ ref: formatFileRef(entry.path), content: entry.content }));
+}
+
+/** Gathers the composer's current form values plus whatever `state` data
+ * `buildPromptText` needs for them, resolves any content the chosen context
+ * mode requires embedding, and writes the generated prompt into the result
+ * textarea. A content-fetch failure (e.g. a file removed after being
+ * checked) is reported as an embedded placeholder rather than losing the
+ * whole generation, consistent with how the rest of the composer degrades
+ * gracefully instead of failing outright. */
+async function generatePrompt() {
+  const goal = el.promptGoal.value;
+  const target = el.promptTarget.value;
+  const output = el.promptOutput.value;
+  const contextMode = el.promptContextMode.value;
+  const filename = el.promptFilename.value;
+  const extraInstructions = el.promptExtra.value;
+
+  const checkedPaths = Array.from(state.checked).sort();
+  const checkedRefs = checkedPaths.map(formatFileRef);
+
+  const lineSelectionEntries = Array.from(state.lineSelections.entries()).sort(([a], [b]) =>
+    a < b ? -1 : a > b ? 1 : 0
+  );
+  const lineRefs = lineSelectionEntries.map(([path, selection]) =>
+    formatLinesRef(path, selection.start, selection.end)
+  );
+
+  let contextEntries = [];
+  try {
+    if (contextMode === "excerpts") {
+      contextEntries = await gatherExcerptEntries(lineSelectionEntries);
+    } else if (contextMode === "full") {
+      contextEntries = await gatherFullFileEntries(checkedPaths);
+    }
+  } catch (err) {
+    contextEntries = [
+      { ref: "(context)", content: `(failed to load context: ${err && err.message ? err.message : err})` },
+    ];
+  }
+
+  el.promptResult.value = buildPromptText({
+    goal,
+    target,
+    output,
+    contextMode,
+    filename,
+    extraInstructions,
+    checkedRefs,
+    lineRefs,
+    contextEntries,
+  });
+}
+
 if (typeof document !== "undefined") {
   el = {
     rootBasename: document.getElementById("root-basename"),
@@ -1690,6 +2001,18 @@ if (typeof document !== "undefined") {
     explorerPane: document.getElementById("explorer-pane"),
     resizer: document.getElementById("resizer"),
     copyToast: document.getElementById("copy-toast"),
+    promptComposerBody: document.getElementById("prompt-composer-body"),
+    promptComposerToggle: document.getElementById("prompt-composer-toggle"),
+    promptGoal: document.getElementById("prompt-goal"),
+    promptTarget: document.getElementById("prompt-target"),
+    promptOutput: document.getElementById("prompt-output"),
+    promptFilenameField: document.getElementById("prompt-filename-field"),
+    promptFilename: document.getElementById("prompt-filename"),
+    promptContextMode: document.getElementById("prompt-context-mode"),
+    promptExtra: document.getElementById("prompt-extra"),
+    promptGenerate: document.getElementById("prompt-generate"),
+    promptCopy: document.getElementById("prompt-copy"),
+    promptResult: document.getElementById("prompt-result"),
   };
 
   init();

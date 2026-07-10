@@ -31,6 +31,14 @@ import {
   copyTextToClipboard,
   fetchFileContents,
   formatLabel,
+  PROMPT_GOALS,
+  PROMPT_TARGETS,
+  PROMPT_OUTPUTS,
+  PROMPT_CONTEXT_MODES,
+  describePromptTarget,
+  describePromptOutput,
+  buildPromptContextSection,
+  buildPromptText,
 } from "./app.js";
 
 // ---- extensionOf ----
@@ -1376,5 +1384,227 @@ describe("formatLabel", () => {
 
   test("falls back to 'Plain' for undefined", () => {
     assert.equal(formatLabel(undefined), "Plain");
+  });
+});
+
+// ---- Prompt composer (issue #7) ----
+
+describe("describePromptTarget", () => {
+  test("describes 'page' without needing any data", () => {
+    assert.match(describePromptTarget("page"), /whole page/);
+  });
+
+  test("lists checked-file refs for 'checked' when some are checked", () => {
+    const description = describePromptTarget("checked", {
+      checkedRefs: ["@file:a.js", "@file:b.js"],
+    });
+    assert.match(description, /@file:a\.js, @file:b\.js/);
+  });
+
+  test("falls back to an explanatory phrase for 'checked' with nothing checked", () => {
+    const description = describePromptTarget("checked", { checkedRefs: [] });
+    assert.match(description, /none are currently checked/);
+  });
+
+  test("lists line refs for 'lines' when a selection exists, pluralizing for more than one", () => {
+    const one = describePromptTarget("lines", { lineRefs: ["@lines:a.js#L1-L2"] });
+    assert.match(one, /selected line range: @lines:a\.js#L1-L2/);
+
+    const many = describePromptTarget("lines", {
+      lineRefs: ["@lines:a.js#L1-L2", "@lines:b.js#L3"],
+    });
+    assert.match(many, /selected line ranges: @lines:a\.js#L1-L2, @lines:b\.js#L3/);
+  });
+
+  test("falls back to an explanatory phrase for 'lines' with nothing selected", () => {
+    const description = describePromptTarget("lines", { lineRefs: [] });
+    assert.match(description, /no lines are currently selected/);
+  });
+
+  test("describes 'diff' without needing any data", () => {
+    assert.match(describePromptTarget("diff"), /current Git diff/);
+  });
+
+  test("defaults unrecognized targets to the 'page' description", () => {
+    assert.equal(describePromptTarget("bogus"), describePromptTarget("page"));
+  });
+
+  test("tolerates being called with no data argument at all", () => {
+    assert.doesNotThrow(() => describePromptTarget("checked"));
+    assert.doesNotThrow(() => describePromptTarget("lines"));
+  });
+});
+
+describe("describePromptOutput", () => {
+  test("returns the fixed instruction for each non-file output", () => {
+    for (const { value } of PROMPT_OUTPUTS) {
+      if (value === "file") continue;
+      assert.equal(typeof describePromptOutput(value), "string");
+      assert.ok(describePromptOutput(value).length > 0);
+    }
+  });
+
+  test("embeds a given filename for 'file'", () => {
+    assert.equal(
+      describePromptOutput("file", "test-spec.md"),
+      "Generate the response as a downloadable file named `test-spec.md`."
+    );
+  });
+
+  test("trims whitespace around a given filename", () => {
+    assert.equal(
+      describePromptOutput("file", "  test-spec.md  "),
+      "Generate the response as a downloadable file named `test-spec.md`."
+    );
+  });
+
+  test("falls back to 'output.md' for an empty/blank filename", () => {
+    assert.match(describePromptOutput("file", ""), /output\.md/);
+    assert.match(describePromptOutput("file", "   "), /output\.md/);
+    assert.match(describePromptOutput("file", undefined), /output\.md/);
+  });
+
+  test("falls back to the 'concise' instruction for an unrecognized output", () => {
+    assert.equal(describePromptOutput("bogus"), describePromptOutput("concise"));
+  });
+});
+
+describe("buildPromptContextSection", () => {
+  test("returns an empty string for 'page' regardless of entries", () => {
+    assert.equal(buildPromptContextSection("page", [{ ref: "@file:a.js", content: "x" }]), "");
+    assert.equal(buildPromptContextSection("page", []), "");
+  });
+
+  test("embeds every entry under a '## Context' heading for 'excerpts'/'full'", () => {
+    const entries = [
+      { ref: "@file:a.js", content: "const a = 1;" },
+      { ref: "@lines:b.js#L1-L2", content: "const b = 2;" },
+    ];
+    for (const mode of ["excerpts", "full"]) {
+      const section = buildPromptContextSection(mode, entries);
+      assert.match(section, /^## Context/);
+      assert.match(section, /### @file:a\.js/);
+      assert.match(section, /const a = 1;/);
+      assert.match(section, /### @lines:b\.js#L1-L2/);
+      assert.match(section, /const b = 2;/);
+    }
+  });
+
+  test("returns an explanatory placeholder for 'excerpts' with no entries", () => {
+    assert.match(buildPromptContextSection("excerpts", []), /No line range is currently selected/);
+    assert.match(buildPromptContextSection("excerpts", undefined), /No line range is currently selected/);
+  });
+
+  test("returns an explanatory placeholder for 'full' with no entries", () => {
+    assert.match(buildPromptContextSection("full", []), /No files are currently checked/);
+  });
+});
+
+describe("buildPromptText", () => {
+  test("produces a coherent, complete prompt for every goal x target x output x context-mode combination", () => {
+    const checkedRefs = ["@file:src/app.js"];
+    const lineRefs = ["@lines:src/app.js#L1-L3"];
+    const contextEntries = [{ ref: "@file:src/app.js", content: "console.log(1);" }];
+
+    for (const { value: goal } of PROMPT_GOALS) {
+      for (const { value: target } of PROMPT_TARGETS) {
+        for (const { value: output } of PROMPT_OUTPUTS) {
+          for (const { value: contextMode } of PROMPT_CONTEXT_MODES) {
+            const text = buildPromptText({
+              goal,
+              target,
+              output,
+              contextMode,
+              filename: "result.md",
+              extraInstructions: "",
+              checkedRefs,
+              lineRefs,
+              contextEntries,
+            });
+            assert.equal(typeof text, "string");
+            assert.ok(text.trim().length > 0, `${goal}/${target}/${output}/${contextMode} was empty`);
+            assert.match(text, /Target:/);
+          }
+        }
+      }
+    }
+  });
+
+  test("degrades gracefully with nothing checked/selected and no context entries at all", () => {
+    for (const { value: contextMode } of PROMPT_CONTEXT_MODES) {
+      const text = buildPromptText({
+        goal: "explain",
+        target: "checked",
+        output: "concise",
+        contextMode,
+        filename: "",
+        extraInstructions: "",
+        checkedRefs: [],
+        lineRefs: [],
+        contextEntries: [],
+      });
+      assert.ok(text.trim().length > 0);
+    }
+  });
+
+  test("includes trimmed additional instructions when given, and omits the section when blank", () => {
+    const withExtra = buildPromptText({
+      goal: "explain",
+      target: "page",
+      output: "concise",
+      contextMode: "page",
+      extraInstructions: "  Focus on error handling.  ",
+    });
+    assert.match(withExtra, /Additional instructions:\nFocus on error handling\./);
+
+    const withoutExtra = buildPromptText({
+      goal: "explain",
+      target: "page",
+      output: "concise",
+      contextMode: "page",
+      extraInstructions: "   ",
+    });
+    assert.doesNotMatch(withoutExtra, /Additional instructions:/);
+  });
+
+  test("always mentions the stable-reference convention", () => {
+    const text = buildPromptText({ goal: "explain", target: "page", output: "concise", contextMode: "page" });
+    assert.match(text, /@file:\.\.\., @dir:\.\.\., @lines:\.\.\./);
+  });
+
+  test("embeds a filename instruction for 'file' output", () => {
+    const text = buildPromptText({
+      goal: "plan",
+      target: "page",
+      output: "file",
+      contextMode: "page",
+      filename: "plan.md",
+    });
+    assert.match(text, /downloadable file named `plan\.md`/);
+  });
+
+  test("notes that Git diff support is unavailable instead of embedding fake context for target 'diff'", () => {
+    for (const contextMode of ["excerpts", "full"]) {
+      const text = buildPromptText({
+        goal: "review",
+        target: "diff",
+        output: "concise",
+        contextMode,
+        contextEntries: [{ ref: "@file:unrelated.js", content: "should not appear" }],
+      });
+      assert.match(text, /Git diff support isn't available/);
+      assert.doesNotMatch(text, /## Context/);
+      assert.doesNotMatch(text, /should not appear/);
+    }
+  });
+
+  test("target 'diff' with context mode 'page' has no diff-unavailable note (no context was requested anyway)", () => {
+    const text = buildPromptText({
+      goal: "review",
+      target: "diff",
+      output: "concise",
+      contextMode: "page",
+    });
+    assert.doesNotMatch(text, /Git diff support isn't available/);
   });
 });

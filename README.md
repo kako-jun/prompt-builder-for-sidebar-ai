@@ -88,6 +88,44 @@ button from the page first; when that happens, the same feedback appears
 instead as a toast notification in the corner of the page, so the result is
 never silently lost.
 
+### Prompt composer
+
+A collapsible "Prompt composer" panel sits at the top of the content pane.
+It builds an editable prompt from four choices, plus optional free-form
+instructions, matching the goal/target/output/context-mode model from the
+project's design:
+
+- **Goal**: find relevant code, explain code, investigate a bug or its
+  impact, review design or security, extract test cases, suggest
+  refactoring, or plan implementation.
+- **Target**: the whole page, the checked files, the currently selected line
+  range(s), or the Git diff. Choosing "Downloadable file" as the output also
+  reveals a filename field, whose value is embedded in the prompt as an
+  explicit "generate a downloadable file named `<name>`" instruction (falling
+  back to `output.md` if left blank).
+- **Output**: concise answer, investigation report, GitHub issue,
+  implementation instructions, checklist, unified diff, or a downloadable
+  file.
+- **Context mode**: "Page context only" generates just the prompt text,
+  relying on the sidebar AI reading the live page itself; "Referenced
+  excerpts" embeds the currently selected line range(s) from every file with
+  an active selection; "Full selected files" embeds the full content of every
+  checked file.
+
+Every combination of these four choices produces a complete, readable prompt
+-- including edge cases like "Referenced excerpts" with nothing currently
+selected, which embeds an explanatory placeholder instead of silently
+omitting the context section. Target "Git diff" is accepted by every context
+mode already (issue #8 will wire up real `git diff` content); until then, a
+context mode that would otherwise embed content notes plainly that no diff
+content could be embedded automatically, rather than silently including
+nothing or fabricating a diff.
+
+Clicking "Generate prompt" (re)writes the result textarea from the current
+choices; the result is otherwise freely editable, and "Copy prompt" always
+copies whatever is currently in that textarea (including manual edits), not
+a freshly regenerated version.
+
 ## API
 
 `GET /{token}/api/root` returns the selected root's `basename` and resolved
