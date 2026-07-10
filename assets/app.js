@@ -422,8 +422,19 @@ async function syncOpenFilesWithChecked() {
   }
 }
 
+/** Computes the next open-files list after opening `path`: add `path` if not
+ * already present, then re-sort by path so the right pane always shows files
+ * in tree (path) order, regardless of the order files were checked in. Pulled
+ * out of `openFile` so this pure list logic can be tested without touching
+ * the network or DOM. */
+export function nextOpenFilesList(currentList, path) {
+  const list = currentList.includes(path) ? [...currentList] : [...currentList, path];
+  list.sort();
+  return list;
+}
+
 async function openFile(path) {
-  state.openFiles.push(path);
+  state.openFiles = nextOpenFilesList(state.openFiles, path);
   addToRecent(path);
   renderRecentList();
   renderFilePanels();

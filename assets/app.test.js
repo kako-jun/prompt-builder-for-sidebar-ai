@@ -11,6 +11,7 @@ import {
   computeSearchMatches,
   clamp,
   nextRecentList,
+  nextOpenFilesList,
 } from "./app.js";
 
 // ---- extensionOf ----
@@ -382,5 +383,43 @@ describe("nextRecentList", () => {
     for (let i = 0; i < 99; i++) {
       assert.ok(result.includes(`file-${i}.txt`), `expected file-${i}.txt to survive`);
     }
+  });
+});
+
+// ---- nextOpenFilesList ----
+
+describe("nextOpenFilesList", () => {
+  test("adds a single entry to an empty list", () => {
+    assert.deepEqual(nextOpenFilesList([], "a.txt"), ["a.txt"]);
+  });
+
+  test("a new entry that sorts before existing entries is inserted at the front, not appended", () => {
+    assert.deepEqual(nextOpenFilesList(["b.txt", "c.txt"], "a.txt"), [
+      "a.txt",
+      "b.txt",
+      "c.txt",
+    ]);
+  });
+
+  test("re-adding an entry already present is idempotent (no duplicate)", () => {
+    assert.deepEqual(nextOpenFilesList(["a.txt", "b.txt"], "a.txt"), ["a.txt", "b.txt"]);
+  });
+
+  test("checking files in reverse-alphabetical order still ends up in path order", () => {
+    let openFiles = [];
+    for (const path of ["c.txt", "b.txt", "a.txt"]) {
+      openFiles = nextOpenFilesList(openFiles, path);
+    }
+
+    assert.deepEqual(openFiles, ["a.txt", "b.txt", "c.txt"]);
+  });
+
+  test("closing a file then re-checking it returns it to its tree-order slot, not the end", () => {
+    const opened = ["a.txt", "b.txt", "c.txt"];
+    const afterClose = opened.filter((p) => p !== "b.txt");
+
+    const reopened = nextOpenFilesList(afterClose, "b.txt");
+
+    assert.deepEqual(reopened, ["a.txt", "b.txt", "c.txt"]);
   });
 });
