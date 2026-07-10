@@ -56,12 +56,18 @@
       ></div>
 
       <main id="content-pane" class="content-pane">
+        <div id="content-toolbar" class="content-toolbar">
+          <span id="content-toolbar-count" class="content-toolbar-count"></span>
+          <div id="content-toolbar-actions" class="content-toolbar-actions"></div>
+        </div>
         <p id="content-empty-hint" class="empty-hint">
           Select files in the explorer to see their contents here.
         </p>
         <div id="file-panels" class="file-panels"></div>
       </main>
     </div>
+
+    <div id="copy-toast" class="copy-toast" role="status" aria-live="polite" hidden></div>
 
     <script type="module">
 //__SCRIPT_PLACEHOLDER__

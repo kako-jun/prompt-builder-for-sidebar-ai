@@ -64,7 +64,9 @@ async function init() {
   wireRecentClear();
   wireResizer();
   wireHashNavigation();
+  wireCopyMenuDismissal();
   renderRecentList();
+  renderContentToolbar();
   await Promise.all([loadRoot(), loadTree()]);
   // Handle a reference already present in the URL when the page loads (e.g.
   // a bookmarked "@dir:" link). Files are never open yet at this point, so
@@ -263,6 +265,23 @@ function renderNode(node) {
   label.appendChild(nameSpan);
 
   row.appendChild(label);
+
+  if (node.isDir) {
+    const copyButton = document.createElement("button");
+    copyButton.type = "button";
+    copyButton.className = "tree-dir-copy";
+    copyButton.textContent = "⧉";
+    copyButton.title = "Copy all files in this directory (Markdown)";
+    copyButton.setAttribute(
+      "aria-label",
+      `Copy all files under ${node.path || "the project root"}`
+    );
+    copyButton.addEventListener("click", (event) => {
+      event.stopPropagation();
+      copyDirectoryContents(node, "markdown", copyButton);
+    });
+    row.appendChild(copyButton);
+  }
 
   if (!node.isDir && node.likelySecret) {
     const badge = document.createElement("span");
@@ -467,6 +486,230 @@ export function refFromHashFragment(fragment) {
   return parseRef(decoded);
 }
 
+// ---- Copy output formatters (issue #6) ----
+//
+// These are pure, DOM-free formatting functions (same style/place as
+// formatFileRef/formatLinesRef above) that turn already-fetched file content
+// into one of four output shapes a user can paste into a sidebar AI chat:
+//
+// - "plain": a path heading plus the raw content, verbatim. The minimal
+//   format; file boundaries between multiple files are only as unambiguous
+//   as a human reading the headings makes them.
+// - "markdown": a "### <path>" heading followed by a fenced code block,
+//   escalating to a longer backtick fence whenever the content itself
+//   contains a run of backticks that would otherwise prematurely close a
+//   three-backtick fence.
+// - "xml": a `<file path="...">...</file>` element. This isn't decorative --
+//   it exists so an AI reading multiple concatenated files can never mistake
+//   where one file's content ends and the next one's path begins, which
+//   plain/markdown headings alone cannot fully guarantee.
+// - "diff": deliberately almost identical to "plain" for now. Issue #8 will
+//   feed a real `git diff` through this same slot; the job here is only to
+//   be a correct receptacle for that future content, not to synthesize a
+//   fake diff (e.g. prefixing every line with "+") out of a file's current
+//   contents.
+
+const MARKDOWN_LANGUAGE_BY_EXTENSION = {
+  rs: "rust",
+  ts: "typescript",
+  tsx: "tsx",
+  js: "javascript",
+  jsx: "jsx",
+  mjs: "javascript",
+  py: "python",
+  go: "go",
+  java: "java",
+  c: "c",
+  h: "c",
+  cpp: "cpp",
+  hpp: "cpp",
+  rb: "ruby",
+  php: "php",
+  sh: "bash",
+  css: "css",
+  html: "html",
+  json: "json",
+  yml: "yaml",
+  yaml: "yaml",
+  toml: "toml",
+  md: "markdown",
+};
+
+/** Maps a file path's extension to the language identifier used to open a
+ * Markdown fenced code block (e.g. "src/app.rs" -> "rust"), for
+ * `formatSingleFile`'s and `formatReferenceWithCode`'s "markdown" output.
+ * Returns "" for an unrecognized or missing extension, so the fence opens
+ * with no language tag rather than a guessed-wrong one. */
+export function languageForPath(path) {
+  return MARKDOWN_LANGUAGE_BY_EXTENSION[extensionOf(path)] || "";
+}
+
+/** Escapes the characters that are unsafe inside a double-quoted XML
+ * attribute value: "&" first (so it doesn't double-escape the entities this
+ * function is about to insert), then "<", ">", and '"'. */
+export function escapeXmlAttribute(value) {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+/** Escapes the characters that are unsafe inside XML element text content:
+ * "&", "<", and ">". Quotes don't need escaping here (unlike
+ * `escapeXmlAttribute`) since this text never sits inside an attribute's own
+ * quotes. */
+export function escapeXmlText(value) {
+  return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+/** Picks a Markdown code-fence delimiter long enough that `content` can
+ * never prematurely close it: three backticks, escalated to one more than
+ * the longest run of consecutive backticks already present in `content`
+ * (content containing a triple-backtick run gets a four-backtick fence, and
+ * so on). */
+export function markdownFenceFor(content) {
+  const runs = content.match(/`+/g) || [];
+  const longestRun = runs.reduce((max, run) => Math.max(max, run.length), 0);
+  return "`".repeat(Math.max(3, longestRun + 1));
+}
+
+/** Renders `path` and `content` in the shared "plain"/"diff" shape: a path
+ * heading, an underline matching its length, then the content verbatim. */
+function plainFileBlock(path, content) {
+  return `${path}\n${"-".repeat(Math.max(path.length, 3))}\n${content}`;
+}
+
+/** Formats one already-fetched file's `path`/`content` in the requested
+ * output `format` ("plain" | "markdown" | "xml" | "diff"); see the section
+ * comment above for what each format looks like and why. An unrecognized
+ * `format` falls back to "plain" rather than throwing, since a UI bug that
+ * passes a stale/typo'd format string should degrade gracefully instead of
+ * losing the user's clipboard content entirely. */
+export function formatSingleFile(path, content, format) {
+  switch (format) {
+    case "markdown": {
+      const fence = markdownFenceFor(content);
+      return `### ${path}\n\n${fence}${languageForPath(path)}\n${content}\n${fence}\n`;
+    }
+    case "xml":
+      return `<file path="${escapeXmlAttribute(path)}">${escapeXmlText(content)}</file>`;
+    case "diff":
+    case "plain":
+    default:
+      return plainFileBlock(path, content);
+  }
+}
+
+/** Formats multiple already-fetched files (`entries`: `{ path, content }[]`)
+ * as one block of text in the requested output `format`, always sorted by
+ * `path` first (the same ordering convention `nextOpenFilesList` -- the
+ * right pane's own order, established in issue #4/#5 -- already uses) so the
+ * same set of files always produces byte-identical output regardless of
+ * check/fetch order. Shared by every "copy more than one file at once"
+ * action (a directory, all checked files). "xml" wraps the individual
+ * `<file>` elements in a single `<files>` so the boundary between the whole
+ * multi-file blob and its surroundings is unambiguous too, not just the
+ * boundaries between the files themselves. */
+export function formatMultipleFiles(entries, format) {
+  const sorted = [...entries].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+
+  if (format === "xml") {
+    const body = sorted.map((entry) => formatSingleFile(entry.path, entry.content, "xml")).join("\n");
+    return `<files>\n${body}\n</files>`;
+  }
+
+  const joiner = format === "markdown" ? "\n" : "\n\n";
+  return sorted.map((entry) => formatSingleFile(entry.path, entry.content, format)).join(joiner);
+}
+
+/** Groups a flat list of file paths into a nested `{ children: Map }` tree
+ * keyed by path segment, inferring each intermediate segment as a directory
+ * purely from the fact that something continues past it -- `paths` is
+ * assumed to contain file paths only (never an explicit directory path), so
+ * a segment with no children of its own is always a file. Pulled out of
+ * `formatFileTree` so tree-shaping and text-rendering stay separate. */
+function buildPathTree(paths) {
+  const root = { children: new Map() };
+  for (const path of paths) {
+    let node = root;
+    for (const segment of path.split("/")) {
+      if (!node.children.has(segment)) {
+        node.children.set(segment, { children: new Map() });
+      }
+      node = node.children.get(segment);
+    }
+  }
+  return root;
+}
+
+/** Renders `node` (from `buildPathTree`) into indented, one-per-line path
+ * segments, appending onto `lines` in place. Mirrors `sortedChildren`'s
+ * "directories before files, each alphabetically" ordering so a copied file
+ * tree reads in the same order the explorer tree itself does. */
+function renderPathTreeLines(node, depth, lines) {
+  const names = Array.from(node.children.keys()).sort((a, b) => {
+    const aIsDir = node.children.get(a).children.size > 0;
+    const bIsDir = node.children.get(b).children.size > 0;
+    if (aIsDir !== bIsDir) return aIsDir ? -1 : 1;
+    return a < b ? -1 : a > b ? 1 : 0;
+  });
+
+  for (const name of names) {
+    const child = node.children.get(name);
+    const isDir = child.children.size > 0;
+    lines.push(`${"  ".repeat(depth)}${name}${isDir ? "/" : ""}`);
+    if (isDir) renderPathTreeLines(child, depth + 1, lines);
+  }
+}
+
+/** Formats a directory/file tree -- no file contents, just the shape -- for
+ * `paths` (a flat list of file paths, assumed already sorted; the nesting
+ * itself is derived from the paths' own "/" segments). "xml" is a flat
+ * `<tree><file path="..."/>...</tree>` list (a tree has no content
+ * boundaries to protect the way file contents do, so there's no need to
+ * nest it); "plain"/"diff" render the same indented listing ("diff" has no
+ * notion of a tree-shaped diff, so it reuses "plain"); "markdown" wraps that
+ * same listing in a fenced code block. */
+export function formatFileTree(paths, format) {
+  if (format === "xml") {
+    const fileTags = paths.map((path) => `<file path="${escapeXmlAttribute(path)}"/>`).join("\n");
+    return `<tree>\n${fileTags}\n</tree>`;
+  }
+
+  const lines = [];
+  renderPathTreeLines(buildPathTree(paths), 0, lines);
+  const listing = lines.join("\n");
+
+  return format === "markdown" ? `\`\`\`\n${listing}\n\`\`\`` : listing;
+}
+
+/** Formats a stable reference string (`ref`, e.g. from `formatFileRef` or
+ * `formatLinesRef`) together with the code it points at, in the requested
+ * output `format`. `content` is expected to already be sliced down to
+ * whatever `ref` describes (e.g. just the selected line range for an
+ * `@lines:` ref) -- this function only formats, it doesn't re-derive which
+ * lines to include. The Markdown fence's language is guessed from `ref`'s
+ * embedded path via `parseRef`, falling back to no language tag if `ref`
+ * isn't a well-formed reference. */
+export function formatReferenceWithCode(ref, content, format) {
+  const parsed = parseRef(ref);
+
+  switch (format) {
+    case "markdown": {
+      const fence = markdownFenceFor(content);
+      const lang = parsed ? languageForPath(parsed.path) : "";
+      return `### ${ref}\n\n${fence}${lang}\n${content}\n${fence}\n`;
+    }
+    case "xml":
+      return `<file ref="${escapeXmlAttribute(ref)}">${escapeXmlText(content)}</file>`;
+    case "diff":
+    case "plain":
+    default:
+      return `${ref}\n${content}`;
+  }
+}
+
 // ---- Search filter ----
 
 function wireSearchInput() {
@@ -588,6 +831,7 @@ function closeFile(path) {
 }
 
 function renderFilePanels() {
+  renderContentToolbar();
   el.filePanels.innerHTML = "";
   el.contentEmptyHint.style.display = state.openFiles.length === 0 ? "" : "none";
 
@@ -640,6 +884,17 @@ function buildFilePanel(path) {
   const linesRef = document.createElement("span");
   linesRef.className = "file-panel-lines-ref";
   header.appendChild(linesRef);
+
+  const actions = document.createElement("div");
+  actions.className = "file-panel-actions";
+  actions.appendChild(
+    buildCopyActionGroup(
+      "Copy",
+      (button) => copyFileAs(path, "markdown", button),
+      () => filePanelCopyMenuItems(path)
+    )
+  );
+  header.appendChild(actions);
 
   article.appendChild(header);
 
@@ -890,6 +1145,385 @@ function flashHighlight(element) {
   }, NAV_FLASH_MS);
 }
 
+// ---- Copy actions (clipboard) ----
+//
+// Every copy affordance in the UI (a file panel's "Copy" button and its "⋯"
+// menu, a tree directory row's hover copy icon, the global toolbar's "Copy
+// all checked" button and its "⋯" menu) funnels through the same two
+// pieces here -- `copyTextToClipboard` (the actual clipboard write) and
+// `flashCopyFeedback` (the transient on-button "Copied!"/"Copy failed" cue)
+// -- so success and failure always look and behave the same everywhere.
+
+const COPY_FEEDBACK_MS = 1500;
+
+/** Writes `text` to the system clipboard via the async Clipboard API,
+ * returning `{ ok: true }` on success or `{ ok: false, error }` on failure
+ * (no Clipboard API in this context, an insecure origin, a denied
+ * permission, etc.) instead of letting the rejection propagate, so every
+ * call site can `await` this and branch on `.ok` without its own try/catch.
+ * `error` is always a plain string, suitable for direct display. */
+export async function copyTextToClipboard(text) {
+  if (
+    typeof navigator === "undefined" ||
+    !navigator.clipboard ||
+    typeof navigator.clipboard.writeText !== "function"
+  ) {
+    return { ok: false, error: "Clipboard API is not available in this browser." };
+  }
+
+  try {
+    await navigator.clipboard.writeText(text);
+    return { ok: true };
+  } catch (err) {
+    return {
+      ok: false,
+      error: err && err.message !== undefined ? String(err.message) : String(err),
+    };
+  }
+}
+
+let copyToastTimeoutId = null;
+
+/** Shows a transient toast notification at the page level, for the case
+ * where the button a copy action started from no longer exists in the DOM
+ * by the time the (possibly slow, multi-file) copy finishes -- see
+ * `flashCopyFeedback`'s `isConnected` check below. Unlike `flashCopyFeedback`,
+ * this has nowhere to read an "original label" back from, so it always just
+ * shows and then hides itself after `COPY_FEEDBACK_MS`, the same duration the
+ * on-button cue uses. */
+function showCopyToast(ok, error) {
+  if (!el.copyToast) return;
+  el.copyToast.textContent = ok ? "Copied to clipboard." : `Copy failed: ${error || "unknown error"}`;
+  el.copyToast.classList.toggle("copy-toast-success", ok);
+  el.copyToast.classList.toggle("copy-toast-failure", !ok);
+  el.copyToast.hidden = false;
+
+  window.clearTimeout(copyToastTimeoutId);
+  copyToastTimeoutId = window.setTimeout(() => {
+    el.copyToast.hidden = true;
+  }, COPY_FEEDBACK_MS);
+}
+
+/** Shows a transient "Copied!"/"Copy failed" label on `button`, reverting to
+ * its original label after `COPY_FEEDBACK_MS` -- the same fade-back shape as
+ * `flashHighlight`'s `.nav-flash` cue (issue #5), just on a button's text
+ * instead of an outline. The button is disabled for the duration so a second
+ * click can't pile up overlapping reverts; on failure, `error` is surfaced
+ * via the button's `title` tooltip, since the label itself only has room for
+ * a short word.
+ *
+ * A multi-file copy re-fetches every file before writing to the clipboard
+ * (`fetchFileContents`), which can take long enough for the user to trigger a
+ * re-render (e.g. toggling a checkbox rebuilds the tree/file panels via
+ * `innerHTML = ""`) that detaches `button` from the document before this
+ * runs. Reflecting success/failure on a detached button would be silently
+ * invisible, so that case falls back to the page-level `showCopyToast`
+ * instead. */
+function flashCopyFeedback(button, ok, error) {
+  if (!button.isConnected) {
+    showCopyToast(ok, error);
+    return;
+  }
+
+  const originalLabel = button.dataset.copyOriginalLabel ?? button.textContent;
+  button.dataset.copyOriginalLabel = originalLabel;
+
+  button.textContent = ok ? "Copied!" : "Copy failed";
+  button.classList.toggle("copy-success", ok);
+  button.classList.toggle("copy-failure", !ok);
+  button.title = ok ? "" : error || "Copy failed";
+  button.disabled = true;
+
+  window.setTimeout(() => {
+    button.textContent = originalLabel;
+    button.classList.remove("copy-success", "copy-failure");
+    button.title = "";
+    button.disabled = false;
+    delete button.dataset.copyOriginalLabel;
+  }, COPY_FEEDBACK_MS);
+}
+
+/** Writes `text` to the clipboard and reflects the result on `button` via
+ * `flashCopyFeedback` -- the one function every copy action in the app calls
+ * to go from "formatted text" to "in the clipboard, with feedback shown". */
+async function copyToClipboardWithFeedback(text, button) {
+  const result = await copyTextToClipboard(text);
+  flashCopyFeedback(button, result.ok, result.error);
+  return result;
+}
+
+/** Fetches the current content of every path in `paths` from `/api/file`, in
+ * parallel. Used by every copy action that spans more than one file (a
+ * directory's contents, all checked files) instead of reading
+ * `state.fileContentCache`, since that cache can be empty or still hold a
+ * "Loading…" placeholder for a file that was only just opened -- copying
+ * that placeholder text would silently corrupt the clipboard output. Throws
+ * (so the caller's `catch` can report a clipboard failure) if any single
+ * fetch fails, rather than silently omitting that file, since a copy that
+ * dropped one file without saying so would violate this issue's "file
+ * boundaries are unambiguous" acceptance criterion. */
+export async function fetchFileContents(paths) {
+  return Promise.all(
+    paths.map(async (path) => {
+      const response = await fetch(apiUrl(`/api/file?path=${encodeURIComponent(path)}`));
+      if (!response.ok) {
+        throw new Error(`failed to load "${path}": HTTP ${response.status}`);
+      }
+      const content = await response.text();
+      return { path, content };
+    })
+  );
+}
+
+export function formatLabel(format) {
+  switch (format) {
+    case "xml":
+      return "XML";
+    case "diff":
+      return "Diff";
+    case "markdown":
+      return "Markdown";
+    case "plain":
+    default:
+      return "Plain";
+  }
+}
+
+// A dropdown ("⋯") menu built by `buildCopyActionGroup`, currently open (if
+// any). Tracked as module state, rather than one `document`-level "click
+// outside" listener per menu instance, so repeatedly re-rendering the tree
+// or file panels (which rebuilds every menu's DOM from scratch) never
+// accumulates extra listeners on `document` -- there is exactly one such
+// listener for the whole app, wired once in `init` via
+// `wireCopyMenuDismissal`.
+let openCopyMenu = null;
+
+function closeOpenCopyMenu() {
+  if (!openCopyMenu) return;
+  openCopyMenu.menu.style.display = "none";
+  openCopyMenu.toggleButton.setAttribute("aria-expanded", "false");
+  openCopyMenu = null;
+}
+
+function wireCopyMenuDismissal() {
+  document.addEventListener("click", (event) => {
+    if (openCopyMenu && !openCopyMenu.wrap.contains(event.target)) {
+      closeOpenCopyMenu();
+    }
+  });
+}
+
+/** Builds the shared "always-visible primary button + '⋯' overflow menu"
+ * control used by every copy affordance in the app (a file panel's header, a
+ * tree directory row, the global toolbar). `getMenuItems()` is called fresh
+ * every time the "⋯" menu is opened (not once at build time), so its
+ * contents -- e.g. whether "Copy reference + code" appears at all -- always
+ * reflect the current selection/checked state rather than whatever it was
+ * when this button cluster was first rendered. Each item is
+ * `{ label, onClick(button), disabled? }`; `onClick`/`onPrimary` receive the
+ * button element that was clicked so they can pass it straight to
+ * `copyToClipboardWithFeedback`. */
+function buildCopyActionGroup(primaryLabel, onPrimary, getMenuItems) {
+  const wrap = document.createElement("div");
+  wrap.className = "copy-action-group";
+
+  const primaryButton = document.createElement("button");
+  primaryButton.type = "button";
+  primaryButton.className = "copy-button copy-button-primary";
+  primaryButton.textContent = primaryLabel;
+  primaryButton.addEventListener("click", () => {
+    closeOpenCopyMenu();
+    onPrimary(primaryButton);
+  });
+  wrap.appendChild(primaryButton);
+
+  const menuButton = document.createElement("button");
+  menuButton.type = "button";
+  menuButton.className = "copy-menu-toggle";
+  menuButton.textContent = "⋯";
+  menuButton.setAttribute("aria-label", "More copy options");
+  menuButton.setAttribute("aria-expanded", "false");
+  wrap.appendChild(menuButton);
+
+  const menu = document.createElement("div");
+  menu.className = "copy-menu";
+  menu.style.display = "none";
+  wrap.appendChild(menu);
+
+  menuButton.addEventListener("click", (event) => {
+    event.stopPropagation();
+
+    if (openCopyMenu && openCopyMenu.menu === menu) {
+      closeOpenCopyMenu();
+      return;
+    }
+    closeOpenCopyMenu();
+
+    menu.innerHTML = "";
+    for (const item of getMenuItems()) {
+      const itemButton = document.createElement("button");
+      itemButton.type = "button";
+      itemButton.className = "copy-menu-item";
+      itemButton.textContent = item.label;
+      itemButton.disabled = Boolean(item.disabled);
+      itemButton.addEventListener("click", () => {
+        closeOpenCopyMenu();
+        item.onClick(itemButton);
+      });
+      menu.appendChild(itemButton);
+    }
+
+    menu.style.display = "flex";
+    menuButton.setAttribute("aria-expanded", "true");
+    openCopyMenu = { menu, toggleButton: menuButton, wrap };
+  });
+
+  return wrap;
+}
+
+/** Copies file `path`'s current content (re-fetched, not read from the
+ * possibly-stale/"Loading…" `state.fileContentCache`) formatted as `format`,
+ * reflecting the result on `button`. */
+async function copyFileAs(path, format, button) {
+  try {
+    const [entry] = await fetchFileContents([path]);
+    const text = formatSingleFile(path, entry.content, format);
+    await copyToClipboardWithFeedback(text, button);
+  } catch (err) {
+    flashCopyFeedback(button, false, err && err.message ? err.message : String(err));
+  }
+}
+
+/** Copies `path`'s stable `@lines:...` reference together with the code in
+ * `selection`'s range (re-fetched fresh, for the same reason `copyFileAs`
+ * does), formatted as Markdown -- the app-wide default format for every
+ * "copy" primary/menu action. */
+async function copyReferenceWithCode(path, selection, button) {
+  try {
+    const [entry] = await fetchFileContents([path]);
+    const lines = entry.content.split("\n");
+    if (lines.length > 1 && lines[lines.length - 1] === "") lines.pop();
+    const selectedCode = lines.slice(selection.start - 1, selection.end).join("\n");
+    const ref = formatLinesRef(path, selection.start, selection.end);
+    const text = formatReferenceWithCode(ref, selectedCode, "markdown");
+    await copyToClipboardWithFeedback(text, button);
+  } catch (err) {
+    flashCopyFeedback(button, false, err && err.message ? err.message : String(err));
+  }
+}
+
+/** Menu items for a file panel's "⋯" button: the three non-default output
+ * formats for a whole-file copy, a reference-only copy, and -- only while
+ * `path` has an active line selection -- a reference-plus-code copy. */
+function filePanelCopyMenuItems(path) {
+  const items = ["plain", "xml", "diff"].map((format) => ({
+    label: `Copy file as ${formatLabel(format)}`,
+    onClick: (button) => copyFileAs(path, format, button),
+  }));
+
+  items.push({
+    label: "Copy reference only",
+    onClick: (button) => copyToClipboardWithFeedback(formatFileRef(path), button),
+  });
+
+  const selection = state.lineSelections.get(path);
+  if (selection) {
+    items.push({
+      label: "Copy reference + code",
+      onClick: (button) => copyReferenceWithCode(path, selection, button),
+    });
+  }
+
+  return items;
+}
+
+/** Copies every file under directory `node` (via its precomputed
+ * `fileDescendants`), formatted as `format`, reflecting the result on
+ * `button`. Used by the tree row's hover copy icon (always Markdown, the
+ * app-wide default). */
+async function copyDirectoryContents(node, format, button) {
+  try {
+    const entries = await fetchFileContents(node.fileDescendants);
+    const text = formatMultipleFiles(entries, format);
+    await copyToClipboardWithFeedback(text, button);
+  } catch (err) {
+    flashCopyFeedback(button, false, err && err.message ? err.message : String(err));
+  }
+}
+
+/** Copies every currently-checked file, formatted as `format`. A no-op while
+ * nothing is checked (the caller is also expected to disable the triggering
+ * control in that state; this is a defensive backstop). */
+async function copyAllChecked(format, button) {
+  if (state.checked.size === 0) return;
+  try {
+    const entries = await fetchFileContents(Array.from(state.checked));
+    const text = formatMultipleFiles(entries, format);
+    await copyToClipboardWithFeedback(text, button);
+  } catch (err) {
+    flashCopyFeedback(button, false, err && err.message ? err.message : String(err));
+  }
+}
+
+/** Copies the whole project's file tree (every file path currently known
+ * from `/api/tree`, not just checked ones -- a tree has no "selection"
+ * concept of its own). Always sorted by path first, satisfying
+ * `formatFileTree`'s "already sorted" precondition regardless of the order
+ * `/api/tree` happened to return entries in. */
+async function copyFileTree(button) {
+  try {
+    const paths = state.entries
+      .filter((entry) => !entry.is_dir)
+      .map((entry) => entry.path)
+      .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+    const text = formatFileTree(paths, "markdown");
+    await copyToClipboardWithFeedback(text, button);
+  } catch (err) {
+    flashCopyFeedback(button, false, err && err.message ? err.message : String(err));
+  }
+}
+
+/** Menu items for the global toolbar's "⋯" button: the three non-default
+ * output formats for a checked-files copy (disabled while nothing is
+ * checked), plus "Copy file tree" (never disabled; it doesn't depend on the
+ * checked set at all). */
+function globalCopyMenuItems() {
+  const hasChecked = state.checked.size > 0;
+
+  const items = ["plain", "xml", "diff"].map((format) => ({
+    label: `Copy all checked as ${formatLabel(format)}`,
+    disabled: !hasChecked,
+    onClick: (button) => copyAllChecked(format, button),
+  }));
+
+  items.push({
+    label: "Copy file tree",
+    onClick: (button) => copyFileTree(button),
+  });
+
+  return items;
+}
+
+/** Rebuilds the content pane's toolbar: the "N files open" count and the
+ * "Copy all checked" button cluster. Called every time the open-files list
+ * might have changed (from `renderFilePanels`) and once at startup (from
+ * `init`), since `state.openFiles`/`state.checked` are otherwise only
+ * updated as a side effect of tree/checkbox interactions this toolbar has no
+ * other hook into. */
+function renderContentToolbar() {
+  const count = state.openFiles.length;
+  el.contentToolbarCount.textContent = count === 1 ? "1 file open" : `${count} files open`;
+
+  el.contentToolbarActions.innerHTML = "";
+  const group = buildCopyActionGroup(
+    "Copy all checked",
+    (button) => copyAllChecked("markdown", button),
+    globalCopyMenuItems
+  );
+  group.querySelector(".copy-button-primary").disabled = state.checked.size === 0;
+  el.contentToolbarActions.appendChild(group);
+}
+
 // ---- Recently opened files (localStorage) ----
 
 function loadRecent() {
@@ -1051,8 +1685,11 @@ if (typeof document !== "undefined") {
     recentClear: document.getElementById("recent-clear"),
     filePanels: document.getElementById("file-panels"),
     contentEmptyHint: document.getElementById("content-empty-hint"),
+    contentToolbarCount: document.getElementById("content-toolbar-count"),
+    contentToolbarActions: document.getElementById("content-toolbar-actions"),
     explorerPane: document.getElementById("explorer-pane"),
     resizer: document.getElementById("resizer"),
+    copyToast: document.getElementById("copy-toast"),
   };
 
   init();
