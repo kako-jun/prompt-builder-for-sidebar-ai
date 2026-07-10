@@ -145,7 +145,6 @@ pub fn discover_tree(root: &Path) -> (Vec<FileEntry>, bool) {
 /// differ between runs or platforms.
 fn discover_tree_with_limit(root: &Path, max_entries: usize) -> (Vec<FileEntry>, bool) {
     let mut entries = Vec::new();
-    let mut visited = 0usize;
     let mut truncated = false;
 
     let walker = WalkBuilder::new(root)
@@ -182,12 +181,11 @@ fn discover_tree_with_limit(root: &Path, max_entries: usize) -> (Vec<FileEntry>,
         })
         .build();
 
-    for result in walker {
+    for (visited, result) in walker.enumerate() {
         if visited >= max_entries {
             truncated = true;
             break;
         }
-        visited += 1;
 
         let entry = match result {
             Ok(entry) => entry,
