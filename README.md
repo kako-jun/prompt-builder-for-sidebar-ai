@@ -181,12 +181,21 @@ order-of-magnitude sense of size, not a precise count.
 `absolutePath` as JSON, so the frontend can present the root as the
 explorer's top-level node without ever exposing a way to navigate above it.
 
-`GET /{token}/api/tree` returns a flat, path-sorted JSON list of every
-eligible file and directory under the selected root (see `src/discovery.rs`).
-Each entry has a `/`-separated `path` relative to the root, `is_dir`, and
-`likely_secret`. Capped at 50,000 entries (`discovery::MAX_TREE_ENTRIES`) as
-a resource-exhaustion backstop against a pathological tree; ordinary
-projects never come close.
+`GET /{token}/api/tree` returns `{ entries, truncated }` as JSON (see
+`src/discovery.rs`): `entries` is a flat, path-sorted list of every eligible
+file and directory under the selected root, each with a `/`-separated `path`
+relative to the root, `is_dir`, and `likely_secret`. The walk is capped at
+50,000 *visited* items (`discovery::MAX_TREE_ENTRIES`) as a
+resource-exhaustion backstop against a pathological tree -- counting every
+item the walk looks at, not just the ones that end up in `entries`, so a
+tree dominated by filtered-out items (an enormous number of symlinks, or
+binaries, since checking one means opening and reading it) can't blow
+through the cap for free. `truncated` is `true` when that cap was actually
+hit, so the response never silently looks complete when it isn't -- the
+explorer UI shows a warning above the file tree in that case. Which entries
+survive a truncation is deterministic (name-sorted per directory during the
+walk itself), not dependent on unspecified filesystem enumeration order.
+Ordinary projects never come close to the cap.
 
 `GET /{token}/api/file?path=<relative path>` returns one file's content as
 `text/plain; charset=utf-8`. This is the most security-sensitive endpoint in

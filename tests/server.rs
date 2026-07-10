@@ -404,9 +404,10 @@ async fn api_tree_body_matches_directory_contents() {
     let body = body_of(&response);
     let parsed: serde_json::Value = serde_json::from_str(body)
         .unwrap_or_else(|err| panic!("body should be valid JSON: {err}, body: {body}"));
-    let paths: std::collections::BTreeSet<String> = parsed
+    assert_eq!(parsed["truncated"], false);
+    let paths: std::collections::BTreeSet<String> = parsed["entries"]
         .as_array()
-        .expect("body should be a JSON array")
+        .expect("body should have an 'entries' array")
         .iter()
         .map(|entry| {
             entry["path"]
@@ -509,7 +510,7 @@ async fn two_concurrent_requests_to_api_tree_return_identical_bodies() {
 }
 
 #[tokio::test]
-async fn api_tree_returns_empty_array_for_empty_root() {
+async fn api_tree_returns_empty_entries_and_untruncated_for_empty_root() {
     let scratch = ScratchDir::new("empty-root");
 
     let (addr, token, server) = spawn_test_server_with_root(scratch.path().to_path_buf()).await;
@@ -519,11 +520,11 @@ async fn api_tree_returns_empty_array_for_empty_root() {
         response.starts_with("HTTP/1.1 200"),
         "expected 200 for an empty root, got: {response}"
     );
-    assert_eq!(
-        body_of(&response),
-        "[]",
-        "expected an empty JSON array body for an empty root"
-    );
+    let body = body_of(&response);
+    let parsed: serde_json::Value = serde_json::from_str(body)
+        .unwrap_or_else(|err| panic!("body should be valid JSON: {err}, body: {body}"));
+    assert_eq!(parsed["entries"], serde_json::json!([]));
+    assert_eq!(parsed["truncated"], false);
 
     server.abort();
 }
@@ -1089,7 +1090,12 @@ async fn api_file_returns_200_for_a_multi_megabyte_text_file() {
 async fn api_file_returns_400_for_a_file_over_the_size_limit() {
     // A sparse file (via `set_len`, not actually writing gigabytes of real
     // data) is enough to exercise the size check without slowing down the
-    // suite.
+    // suite. This is safe from being confused with the binary-file 400 (a
+    // sparse/zero-filled file also trips `is_probably_binary`): `serve_file`
+    // gets a distinct `ResolveError::TooLarge` for an oversized path and
+    // returns 400 for it before `is_probably_binary` ever runs, so this
+    // response body -- asserted below -- unambiguously names the size limit
+    // rather than merely happening to also be a 400.
     let scratch = ScratchDir::new("file-over-size-limit");
     let path = scratch.path().join("huge.txt");
     let file = fs::File::create(&path).unwrap();
@@ -1101,6 +1107,10 @@ async fn api_file_returns_400_for_a_file_over_the_size_limit() {
     assert!(
         response.starts_with("HTTP/1.1 400"),
         "expected 400 for a file over the size limit, got: {response}"
+    );
+    assert!(
+        body_of(&response).contains("too large"),
+        "expected a size-specific message, got: {response}"
     );
 
     server.abort();

@@ -56,20 +56,25 @@ const LIKELY_SECRET_EXTENSIONS: &[&str] = &["pem", "key", "pfx", "p12", "jks"];
 /// the first chunk of the file, treat it as binary.
 const BINARY_SNIFF_LEN: usize = 8000;
 
-/// A hard cap on how many entries [`discover_tree`] will ever collect for a
-/// single request. A backstop against a pathological tree (a directory
-/// containing an enormous number of files, deliberately or otherwise)
-/// consuming unbounded memory and time on every single `/api/tree` request;
-/// set far above what any real project's file count looks like, so it is
-/// never expected to matter for ordinary use.
-const MAX_TREE_ENTRIES: usize = 50_000;
+/// A hard cap on how many entries [`discover_tree`] will ever *visit* for a
+/// single request (not just how many it collects -- see
+/// [`discover_tree_with_limit`]'s doc comment for why that distinction
+/// matters). A backstop against a pathological tree (a directory containing
+/// an enormous number of files, deliberately or otherwise) consuming
+/// unbounded memory and time on every single `/api/tree` request; set far
+/// above what any real project's file count looks like, so it is never
+/// expected to matter for ordinary use. `pub` so `serve_tree` (`src/lib.rs`)
+/// and this crate's tests can both refer to it as documentation of what the
+/// cap actually is, even though only [`discover_tree`] itself enforces it.
+pub const MAX_TREE_ENTRIES: usize = 50_000;
 
-/// Files above this size are refused (via [`is_within_size_limit`]) rather
-/// than served/diffed in full: a per-file cap meant to keep a single request
-/// bounded in memory and time, not a judgment about what counts as "too
-/// big" for a prompt -- the frontend's own selection-size statistics and
-/// "large selection" warning (issue #8) already handle that concern at a
-/// higher level, across a whole selection rather than one file.
+/// Files above this size are refused (as part of [`resolve_regular_file`]'s
+/// own contract) rather than served/diffed in full: a per-file cap meant to
+/// keep a single request bounded in memory and time, not a judgment about
+/// what counts as "too big" for a prompt -- the frontend's own
+/// selection-size statistics and "large selection" warning (issue #8)
+/// already handle that concern at a higher level, across a whole selection
+/// rather than one file.
 pub const MAX_SERVABLE_FILE_SIZE: u64 = 10 * 1024 * 1024;
 
 /// A single file or directory entry in the discovered tree.
@@ -102,13 +107,17 @@ pub struct FileEntry {
 ///   bytes) or that cannot be read (e.g. a permission error): these are
 ///   skipped rather than causing the whole walk to fail.
 ///
-/// - Anything beyond the first [`MAX_TREE_ENTRIES`] entries the walk would
-///   otherwise produce (issue #9's resource-limit hardening against a
-///   pathological tree): the walk simply stops there rather than continuing
-///   to consume memory and time unboundedly.
+/// - Anything beyond the first [`MAX_TREE_ENTRIES`] entries the walk visits
+///   (issue #9's resource-limit hardening against a pathological tree): see
+///   [`discover_tree_with_limit`]'s doc comment for exactly what "visits"
+///   means here and why.
 ///
-/// `root` itself is not included as an entry; only its contents are.
-pub fn discover_tree(root: &Path) -> Vec<FileEntry> {
+/// `root` itself is not included as an entry; only its contents are. Returns
+/// `(entries, truncated)`: `truncated` is `true` when the cap above was
+/// actually hit, so callers (`serve_tree` in `src/lib.rs`) can tell the
+/// difference between "this is genuinely the whole tree" and "this is a
+/// cut-off subset" instead of the response looking complete either way.
+pub fn discover_tree(root: &Path) -> (Vec<FileEntry>, bool) {
     discover_tree_with_limit(root, MAX_TREE_ENTRIES)
 }
 
@@ -117,8 +126,27 @@ pub fn discover_tree(root: &Path) -> Vec<FileEntry> {
 /// (without needing to actually create `MAX_TREE_ENTRIES` real files on
 /// disk, which the real constant is deliberately too large to make
 /// practical for a fast unit test).
-fn discover_tree_with_limit(root: &Path, max_entries: usize) -> Vec<FileEntry> {
+///
+/// The cap is enforced against every item the walk *visits* -- incrementing
+/// before any of the `continue`s below, including the ones for permission
+/// errors, symlinks, and non-regular files -- not just against how many
+/// entries end up collected. This matters: entries.len() alone would let a
+/// tree dominated by filtered-out items (an enormous number of symlinks, or
+/// especially binary files, since checking one means opening and reading it
+/// via `is_probably_binary`) blow straight through what looks like a cap
+/// without ever tripping it, defeating the whole point of a
+/// resource-exhaustion backstop.
+///
+/// The walk itself is ordered by file name at each directory level
+/// (`.sort_by_file_name`) specifically so that *which* entries survive a
+/// truncation is deterministic (the same subset every run, ordered the same
+/// way `sortedChildren` on the frontend already presents siblings) rather
+/// than depending on unspecified directory-enumeration order, which can
+/// differ between runs or platforms.
+fn discover_tree_with_limit(root: &Path, max_entries: usize) -> (Vec<FileEntry>, bool) {
     let mut entries = Vec::new();
+    let mut visited = 0usize;
+    let mut truncated = false;
 
     let walker = WalkBuilder::new(root)
         // The `ignore` crate hides dotfiles by default; that would also
@@ -135,6 +163,8 @@ fn discover_tree_with_limit(root: &Path, max_entries: usize) -> Vec<FileEntry> {
         // guaranteed to be a git repository, so `.gitignore` must be
         // respected unconditionally.
         .require_git(false)
+        // Deterministic truncation order (see this function's doc comment).
+        .sort_by_file_name(|a, b| a.cmp(b))
         .filter_entry(|entry| {
             if entry.depth() == 0 {
                 return true;
@@ -153,9 +183,11 @@ fn discover_tree_with_limit(root: &Path, max_entries: usize) -> Vec<FileEntry> {
         .build();
 
     for result in walker {
-        if entries.len() >= max_entries {
+        if visited >= max_entries {
+            truncated = true;
             break;
         }
+        visited += 1;
 
         let entry = match result {
             Ok(entry) => entry,
@@ -208,7 +240,7 @@ fn discover_tree_with_limit(root: &Path, max_entries: usize) -> Vec<FileEntry> {
     }
 
     entries.sort_by(|a, b| a.path.cmp(&b.path));
-    entries
+    (entries, truncated)
 }
 
 /// Renders a relative path as a `/`-separated string regardless of the
@@ -219,6 +251,24 @@ fn normalize_path(relative: &Path) -> String {
         .map(|component| component.as_os_str().to_string_lossy())
         .collect::<Vec<_>>()
         .join("/")
+}
+
+/// Why [`resolve_regular_file`] rejected a path. Deliberately just two
+/// variants: every "this path is unsafe to serve" reason (escapes the root,
+/// a symlink anywhere in it, missing, a directory, any other non-regular
+/// file) collapses into [`ResolveError::Invalid`] -- callers must not let a
+/// response distinguish "outside the root and exists" from "outside the
+/// root and doesn't exist" (see `serve_file`'s doc comment in `src/lib.rs`).
+/// [`ResolveError::TooLarge`] is kept separate from that on purpose: unlike
+/// every traversal/existence reason above, there is nothing sensitive about
+/// revealing that a path *inside* the root happens to be oversized, and
+/// issue #9 specifically wants "oversized input fails safely and clearly"
+/// -- collapsing it into `Invalid` would turn a clear, actionable 400 into
+/// an unhelpful 404.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResolveError {
+    Invalid,
+    TooLarge,
 }
 
 /// Validates `requested_path` (untrusted -- an HTTP query value, a `git
@@ -232,7 +282,7 @@ fn normalize_path(relative: &Path) -> String {
 /// (`synthesize_untracked_diff` in `src/diff.rs`) both call this instead of
 /// each maintaining their own copy of the same rules.
 ///
-/// Rejects (returning `None`) for any of:
+/// Returns `Err(ResolveError::Invalid)` for any of:
 /// - A component that isn't [`Component::Normal`] -- a `..` (`ParentDir`), a
 ///   leading `/` (`RootDir`/`Prefix`), or a `.` (`CurDir`) -- checked before
 ///   the filesystem is ever touched, so a path that would escape the root
@@ -244,24 +294,37 @@ fn normalize_path(relative: &Path) -> String {
 ///   [`discover_tree`] already uses.
 /// - A final path that isn't a regular file (missing, a directory, or a
 ///   non-regular file such as a FIFO/socket/device).
-pub fn resolve_regular_file(canonical_root: &Path, requested_path: &str) -> Option<PathBuf> {
+///
+/// Returns `Err(ResolveError::TooLarge)` for a final path that passed every
+/// check above but is larger than [`MAX_SERVABLE_FILE_SIZE`] (issue #9's
+/// resource-limit hardening). The size is read from the same
+/// [`std::fs::metadata`] call already needed for the regular-file check
+/// above, rather than a second, separate stat of the same path.
+pub fn resolve_regular_file(
+    canonical_root: &Path,
+    requested_path: &str,
+) -> Result<PathBuf, ResolveError> {
     let mut candidate = canonical_root.to_path_buf();
     for component in Path::new(requested_path).components() {
         let Component::Normal(part) = component else {
-            return None;
+            return Err(ResolveError::Invalid);
         };
         candidate.push(part);
         match std::fs::symlink_metadata(&candidate) {
             Ok(metadata) if !metadata.file_type().is_symlink() => {}
-            _ => return None,
+            _ => return Err(ResolveError::Invalid),
         }
     }
 
-    let is_regular_file = std::fs::metadata(&candidate)
-        .map(|metadata| metadata.file_type().is_file())
-        .unwrap_or(false);
+    let metadata = std::fs::metadata(&candidate).map_err(|_| ResolveError::Invalid)?;
+    if !metadata.file_type().is_file() {
+        return Err(ResolveError::Invalid);
+    }
+    if metadata.len() > MAX_SERVABLE_FILE_SIZE {
+        return Err(ResolveError::TooLarge);
+    }
 
-    is_regular_file.then_some(candidate)
+    Ok(candidate)
 }
 
 /// Reads up to [`BINARY_SNIFF_LEN`] bytes of `path` and returns whether a
@@ -278,19 +341,6 @@ pub fn is_probably_binary(path: &Path) -> std::io::Result<bool> {
     file.take(BINARY_SNIFF_LEN as u64)
         .read_to_end(&mut buffer)?;
     Ok(buffer.contains(&0))
-}
-
-/// Returns whether `path`'s size is within [`MAX_SERVABLE_FILE_SIZE`]. A
-/// metadata read failure is treated as "not within the limit" -- refuse
-/// rather than risk serving/diffing something whose size couldn't even be
-/// checked. Public so both `/{token}/api/file` (`serve_file` in
-/// `src/lib.rs`) and the Git-diff module's untracked-file handling
-/// (`synthesize_untracked_diff` in `src/diff.rs`) enforce the identical cap
-/// instead of each maintaining their own copy of it.
-pub fn is_within_size_limit(path: &Path) -> bool {
-    std::fs::metadata(path)
-        .map(|metadata| metadata.len() <= MAX_SERVABLE_FILE_SIZE)
-        .unwrap_or(false)
 }
 
 /// Baseline, non-exhaustive check for file names that commonly hold
@@ -374,7 +424,7 @@ mod tests {
         fs::create_dir(root.join("sub")).unwrap();
         fs::write(root.join("sub/c.txt"), "c").unwrap();
 
-        let entries = discover_tree(root);
+        let (entries, _) = discover_tree(root);
         let paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
 
         assert_eq!(paths, vec!["a.txt", "b.txt", "sub", "sub/c.txt"]);
@@ -391,7 +441,7 @@ mod tests {
         fs::write(root.join("node_modules/pkg.js"), "irrelevant").unwrap();
         fs::write(root.join("kept.txt"), "kept").unwrap();
 
-        let entries = discover_tree(root);
+        let (entries, _) = discover_tree(root);
         let paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
 
         assert_eq!(paths, vec!["kept.txt"]);
@@ -405,7 +455,7 @@ mod tests {
         fs::write(root.join("ignored.txt"), "ignored").unwrap();
         fs::write(root.join("kept.txt"), "kept").unwrap();
 
-        let entries = discover_tree(root);
+        let (entries, _) = discover_tree(root);
         let paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
 
         assert!(paths.contains(&"kept.txt"));
@@ -419,7 +469,7 @@ mod tests {
         fs::create_dir(root.join(".github")).unwrap();
         fs::write(root.join(".github/workflow.yml"), "workflow").unwrap();
 
-        let entries = discover_tree(root);
+        let (entries, _) = discover_tree(root);
         let paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
 
         assert!(paths.contains(&".github"));
@@ -433,7 +483,7 @@ mod tests {
         fs::write(root.join("text.txt"), "hello").unwrap();
         fs::write(root.join("binary.bin"), [0u8, 1, 2, 3]).unwrap();
 
-        let entries = discover_tree(root);
+        let (entries, _) = discover_tree(root);
         let paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
 
         assert!(paths.contains(&"text.txt"));
@@ -451,7 +501,7 @@ mod tests {
         fs::write(root.join(".npmrc"), "//registry").unwrap();
         fs::write(root.join("normal.txt"), "nothing to see here").unwrap();
 
-        let entries = discover_tree(root);
+        let (entries, _) = discover_tree(root);
         let secret_flag = |name: &str| {
             entries
                 .iter()
@@ -482,7 +532,7 @@ mod tests {
         fs::write(root.join("kept.txt"), "kept").unwrap();
         std::os::unix::fs::symlink(outside.path(), root.join("escape")).unwrap();
 
-        let entries = discover_tree(root);
+        let (entries, _) = discover_tree(root);
         let paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
 
         assert_eq!(paths, vec!["kept.txt"]);
@@ -496,7 +546,7 @@ mod tests {
         fs::write(root.join("real.txt"), "real").unwrap();
         std::os::unix::fs::symlink(root.join("real.txt"), root.join("link.txt")).unwrap();
 
-        let entries = discover_tree(root);
+        let (entries, _) = discover_tree(root);
         let paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
 
         assert!(paths.contains(&"real.txt"));
@@ -515,7 +565,7 @@ mod tests {
         // outside the directory it lives in.
         fs::write(root.join("ignored.txt"), "kept at root").unwrap();
 
-        let entries = discover_tree(root);
+        let (entries, _) = discover_tree(root);
         let paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
 
         assert!(paths.contains(&"sub/kept.txt"));
@@ -534,7 +584,7 @@ mod tests {
         fs::write(root.join("debug.log"), "debug").unwrap();
         fs::write(root.join("keep.log"), "keep").unwrap();
 
-        let entries = discover_tree(root);
+        let (entries, _) = discover_tree(root);
         let paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
 
         assert!(!paths.contains(&"debug.log"));
@@ -553,7 +603,7 @@ mod tests {
         fs::write(root.join("node_modules/pkg.js"), "irrelevant").unwrap();
         fs::write(root.join("kept.txt"), "kept").unwrap();
 
-        let entries = discover_tree(root);
+        let (entries, _) = discover_tree(root);
         let paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
 
         assert!(paths.contains(&"kept.txt"));
@@ -572,7 +622,7 @@ mod tests {
         // baseline check is gated on `is_dir`.
         fs::write(root.join("target"), "not a directory").unwrap();
 
-        let entries = discover_tree(root);
+        let (entries, _) = discover_tree(root);
         let paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
 
         assert!(paths.contains(&"target"));
@@ -584,7 +634,7 @@ mod tests {
         let root = scratch.path();
         fs::write(root.join("CERT.PEM"), "not a real cert").unwrap();
 
-        let entries = discover_tree(root);
+        let (entries, _) = discover_tree(root);
         let entry = entries
             .iter()
             .find(|e| e.path == "CERT.PEM")
@@ -606,7 +656,7 @@ mod tests {
         fs::write(root.join("ID_RSA"), "not a real key").unwrap();
         fs::write(root.join(".NPMRC"), "//registry").unwrap();
 
-        let entries = discover_tree(root);
+        let (entries, _) = discover_tree(root);
         let secret_flag = |name: &str| {
             entries
                 .iter()
@@ -630,7 +680,7 @@ mod tests {
         let root = scratch.path();
         fs::write(root.join(".env.example"), "SECRET=changeme").unwrap();
 
-        let entries = discover_tree(root);
+        let (entries, _) = discover_tree(root);
         let entry = entries
             .iter()
             .find(|e| e.path == ".env.example")
@@ -651,7 +701,7 @@ mod tests {
         let root = scratch.path();
         fs::write(root.join("cert.pfx"), [0u8, 1, 2, 3]).unwrap();
 
-        let entries = discover_tree(root);
+        let (entries, _) = discover_tree(root);
         let paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
 
         assert!(!paths.contains(&"cert.pfx"));
@@ -662,7 +712,7 @@ mod tests {
         let scratch = ScratchDir::new("empty-root");
         let root = scratch.path();
 
-        let entries = discover_tree(root);
+        let (entries, _) = discover_tree(root);
 
         assert!(entries.is_empty());
     }
@@ -673,7 +723,7 @@ mod tests {
         let root = scratch.path();
         fs::write(root.join("empty.txt"), []).unwrap();
 
-        let entries = discover_tree(root);
+        let (entries, _) = discover_tree(root);
         let entry = entries
             .iter()
             .find(|e| e.path == "empty.txt")
@@ -702,7 +752,7 @@ mod tests {
         )
         .unwrap();
 
-        let entries = discover_tree(root);
+        let (entries, _) = discover_tree(root);
         let paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
 
         assert!(!paths.contains(&"almost-binary.dat"));
@@ -716,7 +766,7 @@ mod tests {
         let root = scratch.path();
         fs::write(root.join("edge-binary.dat"), buffer_with_nul_at(8000, 7999)).unwrap();
 
-        let entries = discover_tree(root);
+        let (entries, _) = discover_tree(root);
         let paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
 
         assert!(!paths.contains(&"edge-binary.dat"));
@@ -730,7 +780,7 @@ mod tests {
         let root = scratch.path();
         fs::write(root.join("not-binary.dat"), buffer_with_nul_at(8001, 8000)).unwrap();
 
-        let entries = discover_tree(root);
+        let (entries, _) = discover_tree(root);
         let paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
 
         assert!(paths.contains(&"not-binary.dat"));
@@ -757,7 +807,7 @@ mod tests {
             return;
         }
 
-        let entries = discover_tree(root);
+        let (entries, _) = discover_tree(root);
         let paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
 
         assert!(paths.contains(&"visible.txt"));
@@ -787,7 +837,7 @@ mod tests {
             return;
         }
 
-        let entries = discover_tree(root);
+        let (entries, _) = discover_tree(root);
         let paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
 
         assert!(paths.contains(&"before.txt"));
@@ -824,7 +874,7 @@ mod tests {
 
         let (sender, receiver) = mpsc::channel();
         std::thread::spawn(move || {
-            let entries = discover_tree(&root);
+            let (entries, _) = discover_tree(&root);
             // If the receiver already gave up (test failed/timed out),
             // there is nobody left to notice a send error.
             let _ = sender.send(entries);
@@ -866,7 +916,7 @@ mod tests {
         fs::create_dir(&root).unwrap();
         fs::write(root.join("kept.txt"), "kept").unwrap();
 
-        let entries = discover_tree(&root);
+        let (entries, _) = discover_tree(&root);
         let paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
 
         assert_eq!(paths, vec!["kept.txt"]);
@@ -885,7 +935,7 @@ mod tests {
         std::os::unix::fs::symlink(outside.path(), root.join("hop2")).unwrap();
         std::os::unix::fs::symlink(root.join("hop2"), root.join("hop1")).unwrap();
 
-        let entries = discover_tree(root);
+        let (entries, _) = discover_tree(root);
         let paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
 
         assert_eq!(paths, vec!["kept.txt"]);
@@ -898,7 +948,7 @@ mod tests {
         fs::write(root.join("日本語.txt"), "japanese name").unwrap();
         fs::write(root.join("😀ファイル.md"), "emoji name").unwrap();
 
-        let entries = discover_tree(root);
+        let (entries, _) = discover_tree(root);
         let paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
 
         assert!(paths.contains(&"日本語.txt"));
@@ -912,7 +962,7 @@ mod tests {
         fs::write(root.join(".gitignore"), ".env\n").unwrap();
         fs::write(root.join(".env"), "SECRET=1").unwrap();
 
-        let entries = discover_tree(root);
+        let (entries, _) = discover_tree(root);
 
         assert!(
             entries.iter().all(|e| e.path != ".env"),
@@ -928,7 +978,7 @@ mod tests {
         fs::write(scratch.path().join("a.txt"), "hello").unwrap();
 
         let resolved = resolve_regular_file(scratch.path(), "a.txt");
-        assert_eq!(resolved, Some(scratch.path().join("a.txt")));
+        assert_eq!(resolved, Ok(scratch.path().join("a.txt")));
     }
 
     #[test]
@@ -938,33 +988,45 @@ mod tests {
         fs::write(scratch.path().join("sub/dir/a.txt"), "hello").unwrap();
 
         let resolved = resolve_regular_file(scratch.path(), "sub/dir/a.txt");
-        assert_eq!(resolved, Some(scratch.path().join("sub/dir/a.txt")));
+        assert_eq!(resolved, Ok(scratch.path().join("sub/dir/a.txt")));
     }
 
     #[test]
     fn resolve_regular_file_rejects_parent_dir_traversal() {
         let scratch = ScratchDir::new("resolve-traversal");
-        assert_eq!(resolve_regular_file(scratch.path(), "../secret.txt"), None);
+        assert_eq!(
+            resolve_regular_file(scratch.path(), "../secret.txt"),
+            Err(ResolveError::Invalid)
+        );
     }
 
     #[test]
     fn resolve_regular_file_rejects_an_absolute_path() {
         let scratch = ScratchDir::new("resolve-absolute");
         fs::write(scratch.path().join("a.txt"), "hello").unwrap();
-        assert_eq!(resolve_regular_file(scratch.path(), "/etc/passwd"), None);
+        assert_eq!(
+            resolve_regular_file(scratch.path(), "/etc/passwd"),
+            Err(ResolveError::Invalid)
+        );
     }
 
     #[test]
     fn resolve_regular_file_rejects_a_directory() {
         let scratch = ScratchDir::new("resolve-dir");
         fs::create_dir(scratch.path().join("sub")).unwrap();
-        assert_eq!(resolve_regular_file(scratch.path(), "sub"), None);
+        assert_eq!(
+            resolve_regular_file(scratch.path(), "sub"),
+            Err(ResolveError::Invalid)
+        );
     }
 
     #[test]
     fn resolve_regular_file_rejects_a_missing_path() {
         let scratch = ScratchDir::new("resolve-missing");
-        assert_eq!(resolve_regular_file(scratch.path(), "nope.txt"), None);
+        assert_eq!(
+            resolve_regular_file(scratch.path(), "nope.txt"),
+            Err(ResolveError::Invalid)
+        );
     }
 
     #[cfg(unix)]
@@ -978,7 +1040,10 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(resolve_regular_file(scratch.path(), "link.txt"), None);
+        assert_eq!(
+            resolve_regular_file(scratch.path(), "link.txt"),
+            Err(ResolveError::Invalid)
+        );
     }
 
     #[cfg(unix)]
@@ -993,40 +1058,33 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(resolve_regular_file(scratch.path(), "link-dir/a.txt"), None);
-    }
-
-    // ---- is_within_size_limit ----
-
-    #[test]
-    fn is_within_size_limit_accepts_a_small_file() {
-        let scratch = ScratchDir::new("size-small");
-        fs::write(scratch.path().join("a.txt"), "hello").unwrap();
-        assert!(is_within_size_limit(&scratch.path().join("a.txt")));
+        assert_eq!(
+            resolve_regular_file(scratch.path(), "link-dir/a.txt"),
+            Err(ResolveError::Invalid)
+        );
     }
 
     #[test]
-    fn is_within_size_limit_rejects_a_file_over_the_cap() {
-        let scratch = ScratchDir::new("size-large");
-        let path = scratch.path().join("big.bin");
-        let file = fs::File::create(&path).unwrap();
-        file.set_len(MAX_SERVABLE_FILE_SIZE + 1).unwrap();
-        assert!(!is_within_size_limit(&path));
-    }
-
-    #[test]
-    fn is_within_size_limit_accepts_a_file_exactly_at_the_cap() {
-        let scratch = ScratchDir::new("size-exact");
+    fn resolve_regular_file_accepts_a_file_exactly_at_the_size_cap() {
+        let scratch = ScratchDir::new("resolve-size-exact");
         let path = scratch.path().join("exact.bin");
         let file = fs::File::create(&path).unwrap();
         file.set_len(MAX_SERVABLE_FILE_SIZE).unwrap();
-        assert!(is_within_size_limit(&path));
+
+        assert_eq!(resolve_regular_file(scratch.path(), "exact.bin"), Ok(path));
     }
 
     #[test]
-    fn is_within_size_limit_rejects_a_missing_file() {
-        let scratch = ScratchDir::new("size-missing");
-        assert!(!is_within_size_limit(&scratch.path().join("nope.txt")));
+    fn resolve_regular_file_rejects_a_file_over_the_size_cap() {
+        let scratch = ScratchDir::new("resolve-size-over");
+        let path = scratch.path().join("big.bin");
+        let file = fs::File::create(&path).unwrap();
+        file.set_len(MAX_SERVABLE_FILE_SIZE + 1).unwrap();
+
+        assert_eq!(
+            resolve_regular_file(scratch.path(), "big.bin"),
+            Err(ResolveError::TooLarge)
+        );
     }
 
     // ---- discover_tree pathological-tree cap ----
@@ -1038,8 +1096,9 @@ mod tests {
             fs::write(scratch.path().join(format!("f{i}.txt")), "x").unwrap();
         }
 
-        let entries = discover_tree_with_limit(scratch.path(), 3);
+        let (entries, truncated) = discover_tree_with_limit(scratch.path(), 3);
         assert_eq!(entries.len(), 3);
+        assert!(truncated);
     }
 
     #[test]
@@ -1048,7 +1107,36 @@ mod tests {
         fs::write(scratch.path().join("a.txt"), "a").unwrap();
         fs::write(scratch.path().join("b.txt"), "b").unwrap();
 
-        let entries = discover_tree_with_limit(scratch.path(), 1000);
+        let (entries, truncated) = discover_tree_with_limit(scratch.path(), 1000);
         assert_eq!(entries.len(), 2);
+        assert!(!truncated);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn discover_tree_with_limit_counts_filtered_out_entries_against_the_cap_too() {
+        // Regression guard: the cap used to only bound how many entries got
+        // *collected*, so a tree dominated by filtered-out items (symlinks,
+        // binaries, ...) could blow straight through it while still opening
+        // and reading every single one of them via `is_probably_binary`.
+        let scratch = ScratchDir::new("tree-cap-filtered");
+        let root = scratch.path();
+        fs::write(root.join("real.txt"), "kept").unwrap();
+        for i in 0..5 {
+            std::os::unix::fs::symlink(root.join("real.txt"), root.join(format!("a_link{i}")))
+                .unwrap();
+        }
+
+        // File-name-sorted walk order puts "a_link0".."a_link4" (all
+        // filtered out as symlinks) before "real.txt". A cap that only
+        // counted collected entries would skip past all 5 symlinks for free
+        // and still reach "real.txt"; counting every visited item means the
+        // symlinks alone can exhaust a small budget first.
+        let (entries, truncated) = discover_tree_with_limit(root, 3);
+        assert!(
+            entries.is_empty(),
+            "real.txt should not have been reached: {entries:?}"
+        );
+        assert!(truncated);
     }
 }

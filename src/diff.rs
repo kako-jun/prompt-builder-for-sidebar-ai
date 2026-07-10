@@ -4,7 +4,7 @@
 //! matching the same "never mutate the user's project" invariant the rest of
 //! this tool already holds for file discovery and reading.
 
-use crate::discovery::{is_probably_binary, is_within_size_limit, resolve_regular_file};
+use crate::discovery::{is_probably_binary, resolve_regular_file};
 use std::path::Path;
 use std::process::Command;
 
@@ -182,13 +182,12 @@ fn list_untracked_files(root: &Path) -> Vec<String> {
 ///
 /// Returns `None` -- silently omitting just that one file rather than
 /// failing the whole diff -- for anything this tool already refuses to serve
-/// as file content elsewhere: a path escaping `root` or passing through a
-/// symlink (via [`resolve_regular_file`], the same discipline `serve_file`
-/// uses for `/api/file`; Git itself never reports such a path here, but
-/// re-validating costs nothing and keeps this function correct even if that
-/// assumption ever stops holding), a file larger than
-/// [`crate::discovery::MAX_SERVABLE_FILE_SIZE`] (via [`is_within_size_limit`],
-/// the same cap `/api/file` enforces), a non-regular file, a binary file (via
+/// as file content elsewhere: a path escaping `root`, passing through a
+/// symlink, or exceeding [`crate::discovery::MAX_SERVABLE_FILE_SIZE`] (all
+/// three via [`resolve_regular_file`], the same discipline and cap
+/// `serve_file` uses for `/api/file`; Git itself never reports such a path
+/// here, but re-validating costs nothing and keeps this function correct
+/// even if that assumption ever stops holding), a binary file (via
 /// [`is_probably_binary`], the same heuristic `/api/tree` and `/api/file`
 /// both already use -- checked before ever invoking `git`, so a binary
 /// file's content is never even offered to `git diff`, rather than relying
@@ -202,15 +201,7 @@ fn list_untracked_files(root: &Path) -> Vec<String> {
 /// decoded with [`String::from_utf8_lossy`] for the same reason
 /// [`run_git_diff_head`] does.
 fn synthesize_untracked_diff(root: &Path, path: &str) -> Option<String> {
-    let candidate = resolve_regular_file(root, path)?;
-
-    // Issue #9 resource-limit hardening: an oversized untracked file is
-    // silently omitted here, the same "skip just this one entry" treatment
-    // a binary or symlinked file already gets, rather than handing an
-    // arbitrarily large file to `git diff --no-index`.
-    if !is_within_size_limit(&candidate) {
-        return None;
-    }
+    let candidate = resolve_regular_file(root, path).ok()?;
 
     if is_probably_binary(&candidate).unwrap_or(true) {
         return None;
