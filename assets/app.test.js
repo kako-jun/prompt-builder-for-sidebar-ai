@@ -39,6 +39,8 @@ import {
   describePromptOutput,
   buildPromptContextSection,
   buildPromptText,
+  formatInlineCode,
+  sliceSelectedLines,
 } from "./app.js";
 
 // ---- extensionOf ----
@@ -911,6 +913,55 @@ describe("markdownFenceFor", () => {
   });
 });
 
+// ---- formatInlineCode ----
+
+describe("formatInlineCode", () => {
+  test("wraps plain text with a single backtick on each side", () => {
+    assert.equal(formatInlineCode("output.md"), "`output.md`");
+  });
+
+  test("escalates to a double backtick when the text contains an internal single backtick", () => {
+    // A bare "`out`put.md`" would prematurely close after "out"; escalating
+    // to a 2-backtick fence prevents that. No padding is needed here since
+    // the backtick isn't at either boundary.
+    assert.equal(formatInlineCode("out`put.md"), "``out`put.md``");
+  });
+
+  test("pads a leading/trailing backtick even when no fence escalation is otherwise needed", () => {
+    assert.equal(formatInlineCode("`leading"), "`` `leading ``");
+    assert.equal(formatInlineCode("trailing`"), "`` trailing` ``");
+  });
+
+  test("escalates based on the longest consecutive internal run, matching markdownFenceFor's rule", () => {
+    assert.equal(formatInlineCode("a``b"), "```a``b```");
+  });
+});
+
+// ---- sliceSelectedLines ----
+
+describe("sliceSelectedLines", () => {
+  test("returns the single requested line for start === end", () => {
+    assert.equal(sliceSelectedLines("a\nb\nc\n", 2, 2), "b");
+  });
+
+  test("returns an inclusive multi-line range", () => {
+    assert.equal(sliceSelectedLines("a\nb\nc\nd\n", 2, 3), "b\nc");
+  });
+
+  test("drops a trailing empty line from a final newline before slicing", () => {
+    // Without dropping it, "a\nb\n".split("\n") is ["a", "b", ""] and a
+    // range covering the last real line would still work here, but the line
+    // *count* would be wrong by one -- this is the same rule buildCodeLines
+    // uses for its displayed line numbers, so a selection's line numbers and
+    // this slice have to agree on what "line 2" means.
+    assert.equal(sliceSelectedLines("a\nb\n", 1, 2), "a\nb");
+  });
+
+  test("handles content with no trailing newline the same way", () => {
+    assert.equal(sliceSelectedLines("a\nb\nc", 1, 3), "a\nb\nc");
+  });
+});
+
 // ---- formatSingleFile ----
 
 describe("formatSingleFile", () => {
@@ -1467,15 +1518,22 @@ describe("describePromptOutput", () => {
   test("falls back to the 'concise' instruction for an unrecognized output", () => {
     assert.equal(describePromptOutput("bogus"), describePromptOutput("concise"));
   });
+
+  test("escapes a backtick in a given filename so it can't prematurely close the code span", () => {
+    // Without escaping, "out`put.md" wrapped in a single-backtick span would
+    // read as "`out`" (closing early) followed by stray "put.md`" text.
+    const text = describePromptOutput("file", "out`put.md");
+    assert.equal(text, "Generate the response as a downloadable file named ``out`put.md``.");
+  });
 });
 
 describe("buildPromptContextSection", () => {
-  test("returns an empty string for 'page' regardless of entries", () => {
+  test("returns an empty string for 'page' regardless of entries (non-diff target)", () => {
     assert.equal(buildPromptContextSection("page", [{ ref: "@file:a.js", content: "x" }]), "");
     assert.equal(buildPromptContextSection("page", []), "");
   });
 
-  test("embeds every entry under a '## Context' heading for 'excerpts'/'full'", () => {
+  test("embeds every entry, fenced and language-tagged via formatReferenceWithCode, under a '## Context' heading for 'excerpts'/'full'", () => {
     const entries = [
       { ref: "@file:a.js", content: "const a = 1;" },
       { ref: "@lines:b.js#L1-L2", content: "const b = 2;" },
@@ -1484,10 +1542,25 @@ describe("buildPromptContextSection", () => {
       const section = buildPromptContextSection(mode, entries);
       assert.match(section, /^## Context/);
       assert.match(section, /### @file:a\.js/);
+      assert.match(section, /```javascript/);
       assert.match(section, /const a = 1;/);
       assert.match(section, /### @lines:b\.js#L1-L2/);
       assert.match(section, /const b = 2;/);
     }
+  });
+
+  test("a context entry's own Markdown/backticks can't corrupt the surrounding prompt structure", () => {
+    // Regression guard for hand-rolled `### ${ref}\n\n${content}` formatting,
+    // which embedded content raw with no fence at all -- a checked file
+    // containing its own "```" block or a "## Context"-looking heading would
+    // visually merge with the composer's own section structure. Routing
+    // through formatReferenceWithCode wraps the entry in a fence escalated
+    // past its own embedded 3-backtick run (to 4), so the entry's content
+    // stays unambiguously inside its own code block.
+    const entries = [{ ref: "@file:a.md", content: "## Context\n\n```\nnested\n```" }];
+    const section = buildPromptContextSection("full", entries);
+    assert.match(section, /````markdown\n/);
+    assert.match(section, /nested/);
   });
 
   test("returns an explanatory placeholder for 'excerpts' with no entries", () => {
@@ -1497,6 +1570,15 @@ describe("buildPromptContextSection", () => {
 
   test("returns an explanatory placeholder for 'full' with no entries", () => {
     assert.match(buildPromptContextSection("full", []), /No files are currently checked/);
+  });
+
+  test("target 'diff' always returns the unavailability note, regardless of context mode or entries", () => {
+    for (const mode of ["page", "excerpts", "full"]) {
+      const note = buildPromptContextSection(mode, [{ ref: "@file:unrelated.js", content: "x" }], "diff");
+      assert.match(note, /Git diff support isn't available/);
+      assert.doesNotMatch(note, /## Context/);
+      assert.doesNotMatch(note, /unrelated\.js/);
+    }
   });
 });
 
@@ -1583,8 +1665,12 @@ describe("buildPromptText", () => {
     assert.match(text, /downloadable file named `plan\.md`/);
   });
 
-  test("notes that Git diff support is unavailable instead of embedding fake context for target 'diff'", () => {
-    for (const contextMode of ["excerpts", "full"]) {
+  test("notes that Git diff support is unavailable instead of embedding fake context for target 'diff', in every context mode including 'page'", () => {
+    // "page" is included deliberately: unlike every other target, a diff is
+    // never actually rendered anywhere on the page, so "page context only"
+    // relying on the sidebar AI to just read the live page would hand it a
+    // false premise there just as much as "excerpts"/"full" would.
+    for (const contextMode of ["page", "excerpts", "full"]) {
       const text = buildPromptText({
         goal: "review",
         target: "diff",
@@ -1596,15 +1682,5 @@ describe("buildPromptText", () => {
       assert.doesNotMatch(text, /## Context/);
       assert.doesNotMatch(text, /should not appear/);
     }
-  });
-
-  test("target 'diff' with context mode 'page' has no diff-unavailable note (no context was requested anyway)", () => {
-    const text = buildPromptText({
-      goal: "review",
-      target: "diff",
-      output: "concise",
-      contextMode: "page",
-    });
-    assert.doesNotMatch(text, /Git diff support isn't available/);
   });
 });

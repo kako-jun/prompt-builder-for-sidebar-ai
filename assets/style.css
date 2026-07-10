@@ -666,6 +666,16 @@ body.resizing {
   min-width: 0;
 }
 
+/* An author-stylesheet `display` declaration always beats the user-agent
+   stylesheet's `[hidden] { display: none }`, regardless of selector
+   specificity -- so without this override, `.prompt-field`'s own `display:
+   flex` above would silently cancel the `hidden` attribute JS toggles on
+   `#prompt-filename-field` (app.js's `updatePromptFilenameVisibility`),
+   leaving it visible at all times. */
+.prompt-field[hidden] {
+  display: none;
+}
+
 .prompt-field-wide {
   grid-column: 1 / -1;
 }
@@ -686,7 +696,11 @@ body.resizing {
   resize: vertical;
 }
 
-.prompt-result {
+/* Selector needs to be at least as specific as ".prompt-field textarea"
+   above (0,1,1) to actually win the cascade -- ".prompt-result" alone (0,1,0)
+   would lose to it and never apply, since #prompt-result is itself a
+   ".prompt-field textarea". */
+.prompt-field textarea.prompt-result {
   font-family: var(--font-mono);
   font-size: 0.8rem;
   line-height: 1.5;

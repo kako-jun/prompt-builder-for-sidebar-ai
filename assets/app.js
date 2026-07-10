@@ -575,6 +575,22 @@ export function markdownFenceFor(content) {
   return "`".repeat(Math.max(3, longestRun + 1));
 }
 
+/** Wraps `text` in a Markdown inline code span, the inline-code analog of
+ * `markdownFenceFor`: the backtick run is escalated to one longer than the
+ * longest run already inside `text` (so a filename containing a backtick,
+ * e.g. "out`put.md", can never prematurely close the span), with a padding
+ * space on each side whenever `text` itself starts or ends with a backtick
+ * (the CommonMark rule for exactly that case). Used for user-supplied text
+ * embedded inline in generated prompt text, where a plain single-backtick
+ * span would be unsafe. */
+export function formatInlineCode(text) {
+  const runs = text.match(/`+/g) || [];
+  const longestRun = runs.reduce((max, run) => Math.max(max, run.length), 0);
+  const fence = "`".repeat(longestRun + 1);
+  const needsPadding = text.startsWith("`") || text.endsWith("`");
+  return needsPadding ? `${fence} ${text} ${fence}` : `${fence}${text}${fence}`;
+}
+
 /** Renders `path` and `content` in the shared "plain"/"diff" shape: a path
  * heading, an underline matching its length, then the content verbatim. */
 function plainFileBlock(path, content) {
@@ -711,6 +727,18 @@ export function formatReferenceWithCode(ref, content, format) {
   }
 }
 
+/** Slices `content` down to the 1-indexed, inclusive `start`..`end` line
+ * range, dropping a trailing empty element from a final "\n" first (matching
+ * how `buildCodeLines` counts a file's displayed line count). Shared by
+ * `copyReferenceWithCode` and the prompt composer's `gatherExcerptEntries`,
+ * so the one rule for "which lines does a selection actually cover" can
+ * never quietly diverge between the two call sites. */
+export function sliceSelectedLines(content, start, end) {
+  const lines = content.split("\n");
+  if (lines.length > 1 && lines[lines.length - 1] === "") lines.pop();
+  return lines.slice(start - 1, end).join("\n");
+}
+
 // ---- Prompt composer (issue #7) ----
 //
 // Builds an editable prompt from four choices (goal, target, output, context
@@ -811,20 +839,40 @@ export function describePromptTarget(target, data = {}) {
 export function describePromptOutput(output, filename) {
   if (output === "file") {
     const name = filename && filename.trim() ? filename.trim() : "output.md";
-    return `Generate the response as a downloadable file named \`${name}\`.`;
+    return `Generate the response as a downloadable file named ${formatInlineCode(name)}.`;
   }
   return PROMPT_OUTPUT_INSTRUCTIONS[output] || PROMPT_OUTPUT_INSTRUCTIONS.concise;
 }
 
-/** Builds the "## Context" section embedding `contextEntries` (`{ ref,
- * content }[]`, already fetched/sliced by the caller), or `""` when
- * `contextMode` is "page" (context mode "page context only" means: rely on
- * the sidebar AI reading the live page itself, so nothing gets embedded in
- * the copied text at all). When `contextMode` calls for embedded content but
- * none was gathered (nothing selected/checked yet), returns an explanatory
+/** Builds the prompt's "## Context" section (or, for `target === "diff"`, the
+ * explanation of why there isn't one -- see below), embedding
+ * `contextEntries` (`{ ref, content }[]`, already fetched/sliced by the
+ * caller) via `formatReferenceWithCode` so each entry gets the same fenced,
+ * language-tagged Markdown treatment as every other "reference + code" copy
+ * in the app (and, not incidentally, so a checked file whose content happens
+ * to contain backticks or a Markdown heading can never corrupt the
+ * surrounding prompt structure the way bare, unfenced text would).
+ *
+ * `target === "diff"` is handled first and unconditionally, regardless of
+ * `contextMode`: Git diff support doesn't exist yet (issue #8), so there is
+ * no diff content this page can ever show the sidebar AI, in *any* context
+ * mode -- including "page", where every other target can correctly rely on
+ * "the AI will just read the live page" because the page genuinely does show
+ * that target's content. A diff is never rendered on the page, so silently
+ * saying nothing there would leave the sidebar AI investigating a diff that
+ * was never actually available anywhere it could see.
+ *
+ * For every other target, "page context only" returns `""` (rely on the
+ * sidebar AI reading the live page itself, so nothing gets embedded in the
+ * copied text at all); when `contextMode` calls for embedded content but none
+ * was gathered (nothing selected/checked yet), returns an explanatory
  * placeholder instead of an empty/misleading section, so the caller doesn't
  * have to special-case "mode wants content but there isn't any" itself. */
-export function buildPromptContextSection(contextMode, contextEntries) {
+export function buildPromptContextSection(contextMode, contextEntries, target) {
+  if (target === "diff") {
+    return "Note: Git diff support isn't available in this tool yet, so this page can't show or embed the actual diff content in any context mode. Paste the diff manually if it's needed.";
+  }
+
   if (contextMode === "page") return "";
 
   if (!contextEntries || contextEntries.length === 0) {
@@ -833,7 +881,9 @@ export function buildPromptContextSection(contextMode, contextEntries) {
       : '(No files are currently checked, so no content could be embedded here. Check some files first, or switch context mode to "Page context only".)';
   }
 
-  const body = contextEntries.map((entry) => `### ${entry.ref}\n\n${entry.content}`).join("\n\n");
+  const body = contextEntries
+    .map((entry) => formatReferenceWithCode(entry.ref, entry.content, "markdown"))
+    .join("\n");
   return `## Context\n\n${body}`;
 }
 
@@ -872,19 +922,8 @@ export function buildPromptText(options) {
     "When referring to a specific location in the code, use the stable references shown on the page (@file:..., @dir:..., @lines:...) so it can be traced back precisely."
   );
 
-  if (target === "diff" && contextMode !== "page") {
-    // Git diff support doesn't exist yet (issue #8), so there is no diff
-    // content this composer could ever embed for the "excerpts"/"full"
-    // context modes -- state that plainly instead of silently embedding
-    // nothing, or embedding an unrelated file's content, under a "## Context"
-    // heading that would otherwise imply a diff is actually attached.
-    parts.push(
-      "Note: Git diff support isn't available in this tool yet, so no diff content could be embedded automatically here. Paste the diff manually if it's needed."
-    );
-  } else {
-    const contextSection = buildPromptContextSection(contextMode, contextEntries);
-    if (contextSection) parts.push(contextSection);
-  }
+  const contextSection = buildPromptContextSection(contextMode, contextEntries, target);
+  if (contextSection) parts.push(contextSection);
 
   return parts.join("\n\n");
 }
@@ -1580,9 +1619,7 @@ async function copyFileAs(path, format, button) {
 async function copyReferenceWithCode(path, selection, button) {
   try {
     const [entry] = await fetchFileContents([path]);
-    const lines = entry.content.split("\n");
-    if (lines.length > 1 && lines[lines.length - 1] === "") lines.pop();
-    const selectedCode = lines.slice(selection.start - 1, selection.end).join("\n");
+    const selectedCode = sliceSelectedLines(entry.content, selection.start, selection.end);
     const ref = formatLinesRef(path, selection.start, selection.end);
     const text = formatReferenceWithCode(ref, selectedCode, "markdown");
     await copyToClipboardWithFeedback(text, button);
@@ -1866,12 +1903,7 @@ export function clamp(value, min, max) {
 // prompt" is clicked again (issue #7 acceptance criterion).
 
 function populateSelect(select, options) {
-  for (const option of options) {
-    const optionEl = document.createElement("option");
-    optionEl.value = option.value;
-    optionEl.textContent = option.label;
-    select.appendChild(optionEl);
-  }
+  select.append(...options.map((option) => new Option(option.label, option.value)));
 }
 
 function wirePromptComposer() {
@@ -1883,8 +1915,21 @@ function wirePromptComposer() {
   el.promptOutput.addEventListener("change", updatePromptFilenameVisibility);
   updatePromptFilenameVisibility();
 
-  el.promptGenerate.addEventListener("click", () => {
-    generatePrompt();
+  // Disabling both buttons for the duration of `generatePrompt()` (an
+  // `await`-ing async function) isn't just UX polish: a disabled button
+  // can't dispatch a "click" event at all, so this is what actually rules
+  // out a second "Generate" click racing the first one's still-pending fetch
+  // and overwriting the result with a stale response (and rules out "Copy"
+  // grabbing a known-stale textarea value mid-regeneration).
+  el.promptGenerate.addEventListener("click", async () => {
+    el.promptGenerate.disabled = true;
+    el.promptCopy.disabled = true;
+    try {
+      await generatePrompt();
+    } finally {
+      el.promptGenerate.disabled = false;
+      el.promptCopy.disabled = false;
+    }
   });
 
   el.promptCopy.addEventListener("click", () => {
@@ -1907,41 +1952,67 @@ function updatePromptFilenameVisibility() {
   el.promptFilenameField.hidden = el.promptOutput.value !== "file";
 }
 
-/** Fetches every path in `lineSelectionEntries` (`[path, { start, end }][]`,
- * from `state.lineSelections`) and slices each one down to just its selected
- * range, returning `{ ref, content }[]` for `buildPromptContextSection`'s
- * "excerpts" mode. Mirrors the line-slicing `copyReferenceWithCode` already
- * does for a single file, generalized to every currently selected file at
- * once. */
+/** Resolves each of `paths`'s content, preferring whatever is already sitting
+ * in `state.fileContentCache` (populated whenever a file is opened in the
+ * right pane; `.has(path)` is false until a fetch actually completes, so this
+ * can never pick up a stale/partial value) over an extra network round trip,
+ * and only fetching the paths that aren't cached yet. A single path's fetch
+ * failure becomes that one path's placeholder content rather than rejecting
+ * the whole batch (unlike `fetchFileContents`, whose fail-fast contract is
+ * correct for its own callers -- a clipboard copy that silently dropped one
+ * file would violate issue #6's "file boundaries are unambiguous" criterion
+ * -- but wrong here, where losing every other already-fetched file over one
+ * bad path would make the composer worse than embedding nothing for that one
+ * path). Shared by `gatherExcerptEntries`/`gatherFullFileEntries`, the
+ * composer's two content-embedding context modes. */
+async function resolveFileContents(paths) {
+  const uncached = paths.filter((path) => !state.fileContentCache.has(path));
+  const fetched = await Promise.all(
+    uncached.map(async (path) => {
+      try {
+        const [entry] = await fetchFileContents([path]);
+        return entry;
+      } catch (err) {
+        return { path, content: `(failed to load: ${err && err.message ? err.message : err})` };
+      }
+    })
+  );
+  const fetchedByPath = new Map(fetched.map((entry) => [entry.path, entry.content]));
+  return new Map(paths.map((path) => [path, state.fileContentCache.get(path) ?? fetchedByPath.get(path)]));
+}
+
+/** Resolves `lineSelectionEntries` (`[path, { start, end }][]`, from
+ * `state.lineSelections`) down to just each one's selected range, returning
+ * `{ ref, content }[]` for `buildPromptContextSection`'s "excerpts" mode.
+ * Uses the same `sliceSelectedLines` `copyReferenceWithCode` uses for a
+ * single file, generalized to every currently selected file at once. */
 async function gatherExcerptEntries(lineSelectionEntries) {
   if (lineSelectionEntries.length === 0) return [];
 
-  const fetched = await fetchFileContents(lineSelectionEntries.map(([path]) => path));
-  const contentByPath = new Map(fetched.map((entry) => [entry.path, entry.content]));
+  const contentByPath = await resolveFileContents(lineSelectionEntries.map(([path]) => path));
 
-  return lineSelectionEntries.map(([path, selection]) => {
-    const lines = (contentByPath.get(path) || "").split("\n");
-    if (lines.length > 1 && lines[lines.length - 1] === "") lines.pop();
-    const excerpt = lines.slice(selection.start - 1, selection.end).join("\n");
-    return { ref: formatLinesRef(path, selection.start, selection.end), content: excerpt };
-  });
+  return lineSelectionEntries.map(([path, selection]) => ({
+    ref: formatLinesRef(path, selection.start, selection.end),
+    content: sliceSelectedLines(contentByPath.get(path) || "", selection.start, selection.end),
+  }));
 }
 
-/** Fetches every path in `paths` in full, returning `{ ref, content }[]` for
- * `buildPromptContextSection`'s "full" mode. */
+/** Resolves every path in `paths` to its full content, returning `{ ref,
+ * content }[]` for `buildPromptContextSection`'s "full" mode. */
 async function gatherFullFileEntries(paths) {
   if (paths.length === 0) return [];
-  const fetched = await fetchFileContents(paths);
-  return fetched.map((entry) => ({ ref: formatFileRef(entry.path), content: entry.content }));
+  const contentByPath = await resolveFileContents(paths);
+  return paths.map((path) => ({ ref: formatFileRef(path), content: contentByPath.get(path) || "" }));
 }
 
 /** Gathers the composer's current form values plus whatever `state` data
  * `buildPromptText` needs for them, resolves any content the chosen context
  * mode requires embedding, and writes the generated prompt into the result
- * textarea. A content-fetch failure (e.g. a file removed after being
- * checked) is reported as an embedded placeholder rather than losing the
- * whole generation, consistent with how the rest of the composer degrades
- * gracefully instead of failing outright. */
+ * textarea. Skips gathering entirely for target "diff": `buildPromptText`
+ * always discards `contextEntries` for that target (there's no diff content
+ * to embed -- see `buildPromptContextSection`'s doc comment), so fetching
+ * checked/selected files' content in that case would only be wasted network
+ * I/O for a result nothing ever reads. */
 async function generatePrompt() {
   const goal = el.promptGoal.value;
   const target = el.promptTarget.value;
@@ -1954,23 +2025,19 @@ async function generatePrompt() {
   const checkedRefs = checkedPaths.map(formatFileRef);
 
   const lineSelectionEntries = Array.from(state.lineSelections.entries()).sort(([a], [b]) =>
-    a < b ? -1 : a > b ? 1 : 0
+    a.localeCompare(b)
   );
   const lineRefs = lineSelectionEntries.map(([path, selection]) =>
     formatLinesRef(path, selection.start, selection.end)
   );
 
   let contextEntries = [];
-  try {
+  if (target !== "diff") {
     if (contextMode === "excerpts") {
       contextEntries = await gatherExcerptEntries(lineSelectionEntries);
     } else if (contextMode === "full") {
       contextEntries = await gatherFullFileEntries(checkedPaths);
     }
-  } catch (err) {
-    contextEntries = [
-      { ref: "(context)", content: `(failed to load context: ${err && err.message ? err.message : err})` },
-    ];
   }
 
   el.promptResult.value = buildPromptText({

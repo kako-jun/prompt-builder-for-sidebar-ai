@@ -116,10 +116,12 @@ Every combination of these four choices produces a complete, readable prompt
 -- including edge cases like "Referenced excerpts" with nothing currently
 selected, which embeds an explanatory placeholder instead of silently
 omitting the context section. Target "Git diff" is accepted by every context
-mode already (issue #8 will wire up real `git diff` content); until then, a
-context mode that would otherwise embed content notes plainly that no diff
-content could be embedded automatically, rather than silently including
-nothing or fabricating a diff.
+mode already (issue #8 will wire up real `git diff` content); until then,
+every context mode -- including "Page context only" -- notes plainly that no
+diff content is available, since (unlike every other target) a diff is never
+actually rendered anywhere on the page for a sidebar AI to read on its own,
+so "Page context only"'s usual "just read the live page" assumption doesn't
+hold for this one target.
 
 Clicking "Generate prompt" (re)writes the result textarea from the current
 choices; the result is otherwise freely editable, and "Copy prompt" always
