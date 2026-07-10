@@ -727,7 +727,7 @@ async fn api_file_does_not_hang_and_returns_404_for_a_fifo() {
 }
 
 #[tokio::test]
-async fn api_file_returns_403_for_dotdot_traversal_to_an_existing_outside_file() {
+async fn api_file_returns_404_for_dotdot_traversal_to_an_existing_outside_file() {
     let root_scratch = ScratchDir::new("traversal-root");
     let outside_scratch = ScratchDir::new("traversal-outside");
     fs::write(outside_scratch.path().join("secret.txt"), "outside content").unwrap();
@@ -747,8 +747,8 @@ async fn api_file_returns_403_for_dotdot_traversal_to_an_existing_outside_file()
     )
     .await;
     assert!(
-        response.starts_with("HTTP/1.1 403"),
-        "expected 403 for '../' traversal to an existing outside file, got: {response}"
+        response.starts_with("HTTP/1.1 404"),
+        "expected 404 for '../' traversal to an existing outside file, got: {response}"
     );
 
     server.abort();
@@ -756,12 +756,12 @@ async fn api_file_returns_403_for_dotdot_traversal_to_an_existing_outside_file()
 
 #[tokio::test]
 async fn api_file_returns_404_for_dotdot_traversal_to_a_nonexistent_outside_path() {
-    // Known asymmetry (discovery #1, paired with the test above): whether a
-    // '../' traversal outside the root returns 403 or 404 depends on whether
-    // something happens to exist at the resolved location, which makes
-    // `/api/file` usable as an existence oracle for paths outside the root.
-    // Fixed here as characterization, not remediation; a review decision is
-    // needed on whether both cases should collapse to the same status.
+    // Paired with the test above: a `..` (ParentDir) component is now
+    // rejected with 404 during path parsing, before the filesystem is ever
+    // touched, so this case and the "existing outside file" case above are
+    // symmetric. Both return 404 regardless of whether anything exists at
+    // the resolved location, which is what closes the existence-oracle gap
+    // that used to distinguish 403 (exists) from 404 (doesn't exist).
     let root_scratch = ScratchDir::new("traversal-root-missing");
     let (addr, token, server) =
         spawn_test_server_with_root(root_scratch.path().to_path_buf()).await;
@@ -780,7 +780,7 @@ async fn api_file_returns_404_for_dotdot_traversal_to_a_nonexistent_outside_path
 }
 
 #[tokio::test]
-async fn api_file_returns_403_for_an_absolute_path_query_pointing_at_an_existing_outside_file() {
+async fn api_file_returns_404_for_an_absolute_path_query_pointing_at_an_existing_outside_file() {
     let root_scratch = ScratchDir::new("absolute-traversal-root");
     let outside_scratch = ScratchDir::new("absolute-traversal-outside");
     fs::write(outside_scratch.path().join("secret.txt"), "outside content").unwrap();
@@ -799,8 +799,8 @@ async fn api_file_returns_403_for_an_absolute_path_query_pointing_at_an_existing
     )
     .await;
     assert!(
-        response.starts_with("HTTP/1.1 403"),
-        "expected 403 for an absolute path query pointing outside the root, got: {response}"
+        response.starts_with("HTTP/1.1 404"),
+        "expected 404 for an absolute path query pointing outside the root, got: {response}"
     );
 
     server.abort();
@@ -808,7 +808,7 @@ async fn api_file_returns_403_for_an_absolute_path_query_pointing_at_an_existing
 
 #[cfg(unix)]
 #[tokio::test]
-async fn api_file_returns_403_for_a_symlink_inside_root_pointing_outside_root() {
+async fn api_file_returns_404_for_a_symlink_inside_root_pointing_outside_root() {
     let root_scratch = ScratchDir::new("symlink-out-root");
     let outside_scratch = ScratchDir::new("symlink-out-outside");
     fs::write(outside_scratch.path().join("secret.txt"), "outside content").unwrap();
@@ -823,8 +823,8 @@ async fn api_file_returns_403_for_a_symlink_inside_root_pointing_outside_root() 
 
     let response = get(addr, &format!("/{token}/api/file?path=escape.txt")).await;
     assert!(
-        response.starts_with("HTTP/1.1 403"),
-        "expected 403 for a symlink inside root that points outside root, got: {response}"
+        response.starts_with("HTTP/1.1 404"),
+        "expected 404 for a symlink inside root that points outside root, got: {response}"
     );
 
     server.abort();
@@ -832,13 +832,14 @@ async fn api_file_returns_403_for_a_symlink_inside_root_pointing_outside_root() 
 
 #[cfg(unix)]
 #[tokio::test]
-async fn api_file_serves_content_through_a_symlink_that_stays_inside_root() {
-    // Known asymmetry (discovery #3): `discover_tree` (`/api/tree`) always
-    // excludes symlink entries outright, so a symlink that stays inside the
-    // root never appears in the tree listing. `serve_file` (`/api/file`) has
-    // no such exclusion: it only checks where the canonicalized path ends
-    // up, so a symlink that resolves inside the root is served normally.
-    // Fixed here as characterization, not remediation.
+async fn api_file_returns_404_for_a_symlink_that_stays_inside_root() {
+    // `discover_tree` (`/api/tree`) always excludes symlink entries outright,
+    // so a symlink that stays inside the root never appears in the tree
+    // listing. `serve_file` (`/api/file`) now checks `symlink_metadata` at
+    // every path component instead of only checking where the fully
+    // resolved path ends up, so it refuses a symlink here too, unifying the
+    // invariant: a symlink is never followed or served by either endpoint,
+    // regardless of where it points.
     let scratch = ScratchDir::new("symlink-in-root");
     fs::write(scratch.path().join("real.txt"), "real content").unwrap();
     std::os::unix::fs::symlink(
@@ -851,25 +852,26 @@ async fn api_file_serves_content_through_a_symlink_that_stays_inside_root() {
 
     let response = get(addr, &format!("/{token}/api/file?path=link.txt")).await;
     assert!(
-        response.starts_with("HTTP/1.1 200"),
-        "expected 200 through a symlink that stays inside root, got: {response}"
+        response.starts_with("HTTP/1.1 404"),
+        "expected 404 for a symlink that stays inside root (symlinks are never served), got: {response}"
     );
-    assert_eq!(body_of(&response), "real content");
 
     server.abort();
 }
 
 #[cfg(unix)]
 #[tokio::test]
-async fn api_file_returns_400_for_unreadable_file_permission_denied() {
+async fn api_file_returns_500_for_unreadable_file_permission_denied() {
     use std::os::unix::fs::PermissionsExt;
 
-    // Known behavior (discovery #2): a permission-denied file is rejected
-    // with 400 "binary files are not supported", not 404, because
-    // `is_probably_binary`'s `File::open` fails, and the caller maps that
-    // `Err` to `unwrap_or(true)` (treat as binary) rather than distinguishing
-    // "unreadable" from "actually binary". Fixed here as characterization,
-    // not remediation.
+    // Fixed (was discovery #2): a permission-denied file used to be rejected
+    // with 400 "binary files are not supported", because
+    // `is_probably_binary`'s `File::open` fails and the caller mapped that
+    // `Err` to "treat as binary" rather than distinguishing "unreadable"
+    // from "actually binary". `serve_file` now matches on
+    // `is_probably_binary`'s result explicitly and reports an `Err` (I/O
+    // failure, typically permission denied) as 500, so the file isn't
+    // misreported as a binary-format problem it doesn't actually have.
     let scratch = ScratchDir::new("file-permission-denied");
     let blocked = scratch.path().join("blocked.txt");
     fs::write(&blocked, "blocked content").unwrap();
@@ -892,8 +894,8 @@ async fn api_file_returns_400_for_unreadable_file_permission_denied() {
     fs::set_permissions(&blocked, fs::Permissions::from_mode(0o644)).unwrap();
 
     assert!(
-        response.starts_with("HTTP/1.1 400"),
-        "expected 400 (not 404) for a permission-denied file, got: {response}"
+        response.starts_with("HTTP/1.1 500"),
+        "expected 500 (an unreadable file, not a binary-format rejection) for a permission-denied file, got: {response}"
     );
 
     server.abort();
@@ -954,7 +956,7 @@ async fn api_file_returns_200_for_a_file_with_non_ascii_name() {
 }
 
 #[tokio::test]
-async fn api_file_returns_403_for_percent_encoded_dotdot_traversal() {
+async fn api_file_returns_404_for_percent_encoded_dotdot_traversal() {
     let root_scratch = ScratchDir::new("percent-traversal-root");
     let outside_scratch = ScratchDir::new("percent-traversal-outside");
     fs::write(outside_scratch.path().join("secret.txt"), "outside content").unwrap();
@@ -974,8 +976,8 @@ async fn api_file_returns_403_for_percent_encoded_dotdot_traversal() {
     let encoded_traversal = percent_encode(&format!("../{outside_name}/secret.txt"));
     let response = get(addr, &format!("/{token}/api/file?path={encoded_traversal}")).await;
     assert!(
-        response.starts_with("HTTP/1.1 403"),
-        "expected 403 for a percent-encoded '../' traversal to an existing outside file, got: {response}"
+        response.starts_with("HTTP/1.1 404"),
+        "expected 404 for a percent-encoded '../' traversal to an existing outside file, got: {response}"
     );
 
     server.abort();

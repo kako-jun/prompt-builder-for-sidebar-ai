@@ -6,7 +6,7 @@ use axum::{
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use uuid::Uuid;
 
@@ -132,33 +132,53 @@ struct FileQuery {
 /// This is the most security-sensitive endpoint in the app (see the
 /// `discovery` module docs for the broader threat model this project treats
 /// as a first-class concern: a path-traversal bug here is exactly the kind
-/// of bug this tool exists to avoid). The request path is validated by:
+/// of bug this tool exists to avoid). Rather than joining the untrusted
+/// `path` query value onto the root in one shot and canonicalizing the
+/// result (which would let a request "probe" whether something exists
+/// outside the root, and would not notice a symlink that happens to resolve
+/// back inside the root), the request path is validated one path component
+/// at a time:
 ///
-/// 1. Joining the untrusted `path` query value onto the canonicalized root
-///    and canonicalizing the result. `Path::join` with an absolute
-///    "traversal" value (e.g. `/etc/passwd`) or a relative one full of `..`
-///    both still get caught by step 2, since canonicalizing either resolves
-///    to a path outside the root.
-/// 2. Requiring the canonicalized result to `starts_with` the canonicalized
-///    root. Anything else (including an absolute-path query value, `../`
-///    traversal, or a symlink inside the root that points outside it) is
-///    rejected with 403, never opened.
-/// 3. Requiring the resolved path to be a regular file (not missing, not a
-///    directory, not a FIFO/socket/device) before it is ever opened, the
-///    same discipline `discovery::discover_tree` uses and for the same
-///    reason: opening a FIFO with no writer can hang forever.
+/// 1. Every component of the untrusted `path` query value must be
+///    [`Component::Normal`]. A `..` (`ParentDir`), a leading `/`
+///    (`RootDir`/`Prefix`), or a `.` (`CurDir`) component is rejected with
+///    404 immediately, before anything ever touches the filesystem. This is
+///    what makes the traversal case symmetric with the
+///    doesn't-exist case: whether `../secret.txt` exists outside the root or
+///    not, the request is rejected at the parsing stage, so the response
+///    can never be used as an oracle for what exists outside the root.
+/// 2. Starting from the canonicalized root, each `Normal` component is
+///    pushed onto the path one at a time, and
+///    [`std::fs::symlink_metadata`] (which, unlike [`std::fs::metadata`],
+///    does not follow a symlink) is checked at every step. If any
+///    intermediate component -- or the final one -- is a symlink, or
+///    doesn't exist, the request is rejected with 404. This makes
+///    `/api/file` refuse symlinks under exactly the same rule
+///    `discovery::discover_tree` already uses for `/api/tree` (symlinks are
+///    never followed, never served), instead of only checking where a fully
+///    resolved symlink chain ends up.
+/// 3. Once every component has been validated, the resulting path must be a
+///    regular file (not missing, not a directory, not a FIFO/socket/device)
+///    before it is ever opened, the same discipline `discover_tree` uses and
+///    for the same reason: opening a FIFO with no writer can hang forever.
 /// 4. Reusing [`discovery::is_probably_binary`] (the exact same NUL-sniffing
 ///    heuristic `/{token}/api/tree` uses to exclude binaries) to refuse
 ///    binary files instead of dumping raw bytes into the page.
 ///
-/// A missing/empty `path` query returns 400. A path that resolves outside
-/// the root returns 403. A missing, non-regular, or directory path returns
-/// 404 (deliberately not distinguished from "doesn't exist", so this
-/// endpoint can't be used to probe what exists outside the root). A binary
-/// file returns 400. File bytes that are not valid UTF-8 are rejected with
-/// 400 rather than lossily replacing the invalid bytes, so callers can tell
-/// the difference between "this is text" and "this looked like text to the
-/// NUL-sniff heuristic but isn't valid UTF-8".
+/// A missing/empty `path` query returns 400. Escaping the root, passing
+/// through a symlink at any point, or not existing all return 404 --
+/// deliberately merged into one status, so this endpoint can never be used
+/// to distinguish "outside the root and exists" from "outside the root and
+/// doesn't exist" (this endpoint never returns 403; there is no longer a
+/// response that would tell a caller "something is there, you're just not
+/// allowed to see it"). A directory path also returns 404. A binary file
+/// returns 400. A file that exists, is a regular file, and passed every
+/// check above but still can't be read (e.g. a permission error) returns 500,
+/// distinct from the binary-file 400 so callers aren't told a permission
+/// error is a binary-format problem. File bytes that are not valid UTF-8 are
+/// rejected with 400 rather than lossily replacing the invalid bytes, so
+/// callers can tell the difference between "this is text" and "this looked
+/// like text to the NUL-sniff heuristic but isn't valid UTF-8".
 async fn serve_file(State(root): State<Arc<PathBuf>>, Query(query): Query<FileQuery>) -> Response {
     let requested_path = match query.path.as_deref() {
         Some(path) if !path.is_empty() => path,
@@ -180,28 +200,42 @@ async fn serve_file(State(root): State<Arc<PathBuf>>, Query(query): Query<FileQu
         }
     };
 
-    let candidate = canonical_root.join(requested_path);
-    let canonical_candidate = match std::fs::canonicalize(&candidate) {
-        Ok(canonical_candidate) => canonical_candidate,
-        Err(_) => return (StatusCode::NOT_FOUND, "file not found").into_response(),
-    };
-
-    if !canonical_candidate.starts_with(&canonical_root) {
-        return (StatusCode::FORBIDDEN, "path escapes the selected root").into_response();
+    // Build the candidate path one `Normal` component at a time, checking at
+    // every step that the component neither escapes the root (by rejecting
+    // anything other than `Normal` outright, before touching the
+    // filesystem) nor passes through a symlink. See the function doc comment
+    // above for why this replaces the previous "join, canonicalize, then
+    // `starts_with`" approach.
+    let mut candidate = canonical_root.clone();
+    for component in Path::new(requested_path).components() {
+        let Component::Normal(part) = component else {
+            return (StatusCode::NOT_FOUND, "file not found").into_response();
+        };
+        candidate.push(part);
+        match std::fs::symlink_metadata(&candidate) {
+            Ok(metadata) if !metadata.file_type().is_symlink() => {}
+            _ => return (StatusCode::NOT_FOUND, "file not found").into_response(),
+        }
     }
 
-    let is_regular_file = std::fs::metadata(&canonical_candidate)
+    let is_regular_file = std::fs::metadata(&candidate)
         .map(|metadata| metadata.file_type().is_file())
         .unwrap_or(false);
     if !is_regular_file {
         return (StatusCode::NOT_FOUND, "file not found").into_response();
     }
 
-    if is_probably_binary(&canonical_candidate).unwrap_or(true) {
-        return (StatusCode::BAD_REQUEST, "binary files are not supported").into_response();
+    match is_probably_binary(&candidate) {
+        Ok(true) => {
+            return (StatusCode::BAD_REQUEST, "binary files are not supported").into_response()
+        }
+        Ok(false) => {}
+        Err(_) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, "could not read file").into_response()
+        }
     }
 
-    let bytes = match std::fs::read(&canonical_candidate) {
+    let bytes = match std::fs::read(&candidate) {
         Ok(bytes) => bytes,
         Err(_) => return (StatusCode::NOT_FOUND, "file not found").into_response(),
     };

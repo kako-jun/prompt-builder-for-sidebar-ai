@@ -44,14 +44,21 @@ Each entry has a `/`-separated `path` relative to the root, `is_dir`, and
 
 `GET /{token}/api/file?path=<relative path>` returns one file's content as
 `text/plain; charset=utf-8`. This is the most security-sensitive endpoint in
-the app: the requested path is joined onto the canonicalized root,
-canonicalized itself, and rejected with 403 unless the result still starts
-with the canonicalized root, so `../` traversal, an absolute-path query
-value, and a symlink that points outside the root are all refused rather
-than followed. A missing/empty `path` query returns 400; a missing,
-directory, or non-regular-file path returns 404; a binary file (by the same
-NUL-sniffing heuristic `api/tree` uses) or content that isn't valid UTF-8
-returns 400.
+the app: the requested path is validated one path component at a time,
+starting from the canonicalized root. Any component that isn't a plain name
+(a `..`, a leading `/`, or a `.`) is rejected immediately, before the
+filesystem is ever touched; each remaining component is then checked with
+`symlink_metadata` to make sure it isn't a symlink. This means `../`
+traversal, an absolute-path query value, and a symlink anywhere in the path
+(whether it points outside the root or stays inside it) are all refused,
+matching the same "never follow a symlink" invariant `api/tree` already
+uses. A missing/empty `path` query returns 400. Escaping the root, passing
+through a symlink, not existing, or being a directory all return 404 --
+merged into a single status so this endpoint can never be used to tell
+whether something exists outside the selected root (it never returns 403).
+A binary file (by the same NUL-sniffing heuristic `api/tree` uses) returns
+400; content that isn't valid UTF-8 also returns 400. A file that passes
+every check but still can't be read (e.g. a permission error) returns 500.
 
 ### What is excluded
 
