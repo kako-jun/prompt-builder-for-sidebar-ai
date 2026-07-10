@@ -394,10 +394,13 @@ export function formatLinesRef(path, start, end) {
  * start=42/end=57, since a hand-edited URL fragment shouldn't silently fail
  * to navigate just because the two numbers were swapped.
  *
- * Known, narrow limitation: a path that itself contains "#" cannot
- * round-trip through an "@lines:" reference, because the first "#" found
- * after the "@lines:" prefix is always treated as the start of the
- * line-range suffix. Not handled here; left as a documented edge case. */
+ * A path that itself contains "#" (e.g. "notes#1.md") still round-trips:
+ * the *last* "#" in the string is treated as the start of the line-range
+ * suffix, not the first, since the range suffix is always what
+ * `formatLinesRef` appended most recently. This isn't a fully general
+ * solution -- a path containing the literal substring "#L5" right before
+ * its real range suffix could still be misread -- but it correctly handles
+ * every practical case of a "#" occurring earlier in the path. */
 export function parseRef(refString) {
   if (typeof refString !== "string") return null;
 
@@ -413,7 +416,7 @@ export function parseRef(refString) {
 
   if (refString.startsWith("@lines:")) {
     const rest = refString.slice("@lines:".length);
-    const hashIndex = rest.indexOf("#");
+    const hashIndex = rest.lastIndexOf("#");
     if (hashIndex === -1) return null;
 
     const path = rest.slice(0, hashIndex);

@@ -12,6 +12,8 @@ import {
   clamp,
   nextRecentList,
   nextOpenFilesList,
+  formatLinesRef,
+  parseRef,
 } from "./app.js";
 
 // ---- extensionOf ----
@@ -421,5 +423,19 @@ describe("nextOpenFilesList", () => {
     const reopened = nextOpenFilesList(afterClose, "b.txt");
 
     assert.deepEqual(reopened, ["a.txt", "b.txt", "c.txt"]);
+  });
+});
+
+// ---- parseRef: paths containing '#' (lastIndexOf fix) ----
+
+describe("parseRef - paths containing '#'", () => {
+  test("a path containing '#' round-trips through formatLinesRef/parseRef after the lastIndexOf fix", () => {
+    // Before the fix, `parseRef` split on the *first* "#" (`rest.indexOf`),
+    // which mistook the "#" inside the path itself for the range-suffix
+    // separator and returned null for this exact input. Splitting on the
+    // *last* "#" (`rest.lastIndexOf`) fixes the common case of a single "#"
+    // occurring earlier in the path.
+    const ref = formatLinesRef("notes#1.md", 5, 5);
+    assert.deepEqual(parseRef(ref), { kind: "lines", path: "notes#1.md", start: 5, end: 5 });
   });
 });
