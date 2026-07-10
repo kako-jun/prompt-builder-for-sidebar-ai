@@ -14,6 +14,10 @@ const RECENT_LIMIT = 100;
 const MIN_EXPLORER_WIDTH = 220;
 const MAX_EXPLORER_WIDTH = 800;
 
+// How long a navigation-target highlight (from a URL fragment jump) stays
+// visible before fading back to the normal, unhighlighted look.
+const NAV_FLASH_MS = 1500;
+
 const SOURCE_EXTENSIONS = new Set([
   "rs",
   "ts",
@@ -59,8 +63,14 @@ async function init() {
   wireSearchInput();
   wireRecentClear();
   wireResizer();
+  wireHashNavigation();
   renderRecentList();
   await Promise.all([loadRoot(), loadTree()]);
+  // Handle a reference already present in the URL when the page loads (e.g.
+  // a bookmarked "@dir:" link). Files are never open yet at this point, so
+  // an "@file:"/"@lines:" fragment is necessarily a no-op here; it only
+  // takes effect once matched against files opened later in the session.
+  handleHashNavigation();
 }
 
 function apiUrl(suffix) {
@@ -705,13 +715,19 @@ function handleLineClick(path, lineNumber, shiftKey) {
 
 /** Records the selection for `path` (`anchor` is the plain-click line that
  * Shift-click ranges are measured from; the highlighted range is always
- * `min`/`max` of the two endpoints regardless of click order) and reflects
- * it in that file panel's DOM. */
-function setLineSelection(path, anchor, endpointA, endpointB) {
+ * `min`/`max` of the two endpoints regardless of click order), reflects it
+ * in that file panel's DOM, and -- unless `writeHash` is `false` (used when
+ * a selection is being applied *from* an incoming hash, to avoid rewriting
+ * the same navigation back onto itself) -- updates `location.hash` to match. */
+function setLineSelection(path, anchor, endpointA, endpointB, writeHash = true) {
   const start = Math.min(endpointA, endpointB);
   const end = Math.max(endpointA, endpointB);
   state.lineSelections.set(path, { anchor, start, end });
   updateLineSelectionDom(path);
+
+  if (writeHash) {
+    window.location.hash = hashFragmentFromRef(formatLinesRef(path, start, end));
+  }
 }
 
 /** Applies the current `state.lineSelections` entry for `path` (if any) to
@@ -736,6 +752,94 @@ function updateLineSelectionDom(path, panel = findFilePanelElement(path)) {
   if (!linesRefEl) return;
   linesRefEl.textContent = selection ? formatLinesRef(path, selection.start, selection.end) : "";
   linesRefEl.style.display = selection ? "" : "none";
+}
+
+// ---- URL fragment navigation ----
+
+function wireHashNavigation() {
+  window.addEventListener("hashchange", handleHashNavigation);
+}
+
+function handleHashNavigation() {
+  const fragment = window.location.hash.slice(1);
+  if (!fragment) return;
+
+  const ref = refFromHashFragment(fragment);
+  if (!ref) return;
+
+  if (ref.kind === "dir") {
+    revealDirNode(ref.path);
+  } else if (ref.kind === "file") {
+    revealFilePanel(ref.path, null);
+  } else if (ref.kind === "lines") {
+    revealFilePanel(ref.path, ref);
+  }
+}
+
+/** Scrolls to and highlights the open file panel for `path`, applying
+ * `range`'s line selection first if given. A no-op if `path` isn't currently
+ * open in the right pane -- auto-opening a file from a URL fragment is out
+ * of scope for this issue. Expands a collapsed panel first, since otherwise
+ * there would be no code rows to highlight or scroll to. */
+function revealFilePanel(path, range) {
+  if (!state.openFiles.includes(path)) return;
+
+  if (state.collapsedPanels.has(path)) {
+    state.collapsedPanels.delete(path);
+    renderFilePanels();
+  }
+
+  if (range) {
+    // `writeHash: false` here: this selection is being *applied from* the
+    // hash we just navigated to, so writing it back would be a redundant
+    // no-op at best and a feedback loop at worst.
+    setLineSelection(path, range.end, range.start, range.end, false);
+  }
+
+  const panel = findFilePanelElement(path);
+  if (!panel) return;
+  panel.scrollIntoView({ behavior: "smooth", block: "start" });
+  flashHighlight(panel);
+}
+
+/** Finds the tree `<li class="tree-node">` for `path`, or `null` if no such
+ * node exists in the currently loaded tree. Same rationale as
+ * `findFilePanelElement` for iterating instead of using a CSS attribute
+ * selector. */
+function findTreeNodeElement(path) {
+  for (const li of el.treeRoot.querySelectorAll(".tree-node")) {
+    if (li.dataset.path === path) return li;
+  }
+  return null;
+}
+
+/** Expands every ancestor directory of `path` (not `path` itself) so an
+ * "@dir:" reference's target is guaranteed visible in the rendered tree,
+ * then scrolls to and highlights it. A no-op if `path` isn't a node in the
+ * currently loaded tree at all. */
+function revealDirNode(path) {
+  if (!state.nodesByPath.has(path)) return;
+
+  const segments = path.split("/");
+  for (let i = 1; i < segments.length; i++) {
+    state.expandedDirs.add(segments.slice(0, i).join("/"));
+  }
+  renderTree();
+
+  const node = findTreeNodeElement(path);
+  if (!node) return;
+  node.scrollIntoView({ behavior: "smooth", block: "center" });
+  flashHighlight(node);
+}
+
+/** Adds a transient `.nav-flash` highlight class to `element`, removing it
+ * again after `NAV_FLASH_MS`, so a URL-fragment jump has a visible "you are
+ * here" cue that fades rather than a highlight that lingers forever. */
+function flashHighlight(element) {
+  element.classList.add("nav-flash");
+  window.setTimeout(() => {
+    element.classList.remove("nav-flash");
+  }, NAV_FLASH_MS);
 }
 
 // ---- Recently opened files (localStorage) ----
