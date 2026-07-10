@@ -115,18 +115,41 @@ project's design:
 Every combination of these four choices produces a complete, readable prompt
 -- including edge cases like "Referenced excerpts" with nothing currently
 selected, which embeds an explanatory placeholder instead of silently
-omitting the context section. Target "Git diff" is accepted by every context
-mode already (issue #8 will wire up real `git diff` content); until then,
-every context mode -- including "Page context only" -- notes plainly that no
-diff content is available, since (unlike every other target) a diff is never
-actually rendered anywhere on the page for a sidebar AI to read on its own,
-so "Page context only"'s usual "just read the live page" assumption doesn't
-hold for this one target.
+omitting the context section. Target "Git diff" embeds the current diff (via
+`GET /{token}/api/diff`, see below) under the "## Context" heading in every
+context mode, including "Page context only": unlike every other target, a
+diff is never actually rendered anywhere on the page for a sidebar AI to read
+on its own, so "Page context only"'s usual "just read the live page"
+assumption doesn't hold for this one target. If the selected root isn't a
+Git repository, or there are no local changes, the Context section says so
+in plain language instead of appearing empty or broken.
 
 Clicking "Generate prompt" (re)writes the result textarea from the current
 choices; the result is otherwise freely editable, and "Copy prompt" always
 copies whatever is currently in that textarea (including manual edits), not
 a freshly regenerated version.
+
+### Selection size statistics
+
+The content toolbar shows, next to the open-file count, a live line of
+statistics for the currently checked selection: file count, total character
+count, and an estimated token count, updating as files are checked/unchecked
+and as each one's content finishes loading (a checked-but-still-loading file
+counts toward the file count immediately but not yet toward the character
+count, and is called out explicitly, e.g. "3 files selected (1 still
+loading)", rather than silently under-reporting the total). Past roughly
+200,000 characters the line also gets a "⚠ large selection" warning -- a
+soft, order-of-magnitude heuristic meant to catch an accidental
+"select-everything", not a hard limit enforced anywhere.
+
+The token count is deliberately labeled "(rough estimate)": it is computed as
+`characters ÷ 4`, a widely-used approximation for English-ish source/prose
+text, not a real tokenizer for any specific model. This tool is vendor-neutral
+and has no access to (and makes no attempt to replicate) any particular AI
+provider's actual tokenizer, so the estimate can be meaningfully off --
+especially for text that isn't English-like prose (dense symbolic code,
+non-Latin scripts, minified/generated files) -- and should be read as an
+order-of-magnitude sense of size, not a precise count.
 
 ## API
 
@@ -156,6 +179,26 @@ whether something exists outside the selected root (it never returns 403).
 A binary file (by the same NUL-sniffing heuristic `api/tree` uses) returns
 400; content that isn't valid UTF-8 also returns 400. A file that passes
 every check but still can't be read (e.g. a permission error) returns 500.
+
+`GET /{token}/api/diff` returns the selected root's current Git diff as JSON:
+`isGitRepo` (whether the root is inside a Git working tree at all -- `false`
+covers both "not a Git repository" and "the `git` binary isn't installed",
+which this endpoint deliberately can't tell apart, since either way there is
+simply no diff to show) and `diff` (the diff text, or `""` when there's
+nothing to show). The diff combines tracked changes -- staged and unstaged,
+via `git diff HEAD` -- with untracked files, which `git diff` never includes
+by default: each untracked file is read directly (through the same
+symlink-refusing, binary-skipping, UTF-8-only discipline `api/file` already
+uses) and rendered as a synthesized "new file" block using the identical
+`diff --git a/<path> b/<path>` header convention Git's own output uses, so
+the whole response stays one consistently-delimited document regardless of
+which parts came from Git itself. This endpoint never mutates the
+repository -- no `git add`, no staging, no commits -- and never errors for a
+non-Git root or a repository with no commits yet; both degrade to an empty
+(or partial, for the no-commits + untracked-files case) diff rather than a
+failure response. See `src/diff.rs` for the exact command sequence and edge
+cases (modified/added/deleted/untracked files, an empty repository, a
+non-Git directory).
 
 ### What is excluded
 
@@ -201,3 +244,15 @@ extension-less SSH key names (`id_rsa`, `id_ed25519`, ...), `.npmrc`, and
   be browsed; more thorough secret detection is tracked separately.
 - Binary detection is a heuristic (NUL byte in a small prefix), the same
   kind git itself uses; it is not a guarantee for every file format.
+- `api/diff` shells out to the `git` binary on `PATH`; it must be installed
+  for diff support to work (a missing binary degrades to `isGitRepo: false`
+  rather than an error, so the rest of the tool is unaffected). A repository
+  with no commits yet that also has something staged (`git add`ed before the
+  first commit) is a known gap: `git diff HEAD` has no `HEAD` to compare
+  against and is skipped entirely in that case, and a staged (not merely
+  untracked) file doesn't show up in the untracked-file listing either --
+  the change would be silently missing from the diff until after the first
+  commit.
+- The token count shown next to the selection size statistics is a rough
+  `characters ÷ 4` estimate, not a real tokenizer for any specific model; see
+  the "Selection size statistics" section above for why.

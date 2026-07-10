@@ -844,23 +844,26 @@ export function describePromptOutput(output, filename) {
   return PROMPT_OUTPUT_INSTRUCTIONS[output] || PROMPT_OUTPUT_INSTRUCTIONS.concise;
 }
 
-/** Builds the prompt's "## Context" section (or, for `target === "diff"`, the
- * explanation of why there isn't one -- see below), embedding
- * `contextEntries` (`{ ref, content }[]`, already fetched/sliced by the
- * caller) via `formatReferenceWithCode` so each entry gets the same fenced,
+/** Builds the prompt's "## Context" section, embedding `contextEntries`
+ * (`{ ref, content }[]`, already fetched/sliced by the caller) via
+ * `formatReferenceWithCode` so each entry gets the same fenced,
  * language-tagged Markdown treatment as every other "reference + code" copy
  * in the app (and, not incidentally, so a checked file whose content happens
  * to contain backticks or a Markdown heading can never corrupt the
  * surrounding prompt structure the way bare, unfenced text would).
  *
  * `target === "diff"` is handled first and unconditionally, regardless of
- * `contextMode`: Git diff support doesn't exist yet (issue #8), so there is
- * no diff content this page can ever show the sidebar AI, in *any* context
- * mode -- including "page", where every other target can correctly rely on
- * "the AI will just read the live page" because the page genuinely does show
- * that target's content. A diff is never rendered on the page, so silently
- * saying nothing there would leave the sidebar AI investigating a diff that
- * was never actually available anywhere it could see.
+ * `contextMode`: a diff is never rendered anywhere on the page for a sidebar
+ * AI to read on its own the way an open file panel is, so unlike every other
+ * target, "page context only"'s usual "the AI will just read the live page"
+ * assumption never holds for it -- the diff (via `gatherDiffEntries`, which
+ * always resolves to exactly one entry, real diff text or an explanatory
+ * placeholder for "not a Git repository"/"no local changes"/a fetch failure)
+ * is embedded regardless of the chosen context mode, and choosing a Target
+ * other than "excerpts"/"full" for it wouldn't leave out anything meaningful
+ * to embed anyway -- a diff is already a purpose-built excerpt of the
+ * changes, not a whole file, so there's no separate "just an excerpt of the
+ * diff" mode to speak of.
  *
  * For every other target, "page context only" returns `""` (rely on the
  * sidebar AI reading the live page itself, so nothing gets embedded in the
@@ -870,7 +873,10 @@ export function describePromptOutput(output, filename) {
  * have to special-case "mode wants content but there isn't any" itself. */
 export function buildPromptContextSection(contextMode, contextEntries, target) {
   if (target === "diff") {
-    return "Note: Git diff support isn't available in this tool yet, so this page can't show or embed the actual diff content in any context mode. Paste the diff manually if it's needed.";
+    const entry = contextEntries && contextEntries[0];
+    if (!entry) return "(No Git diff information is available.)";
+    const fence = markdownFenceFor(entry.content);
+    return `## Context\n\n### Git diff\n\n${fence}diff\n${entry.content}\n${fence}\n`;
   }
 
   if (contextMode === "page") return "";
@@ -926,6 +932,85 @@ export function buildPromptText(options) {
   if (contextSection) parts.push(contextSection);
 
   return parts.join("\n\n");
+}
+
+// ---- Selection size statistics (issue #8) ----
+//
+// A rough, clearly-labeled sense of how big the current selection is --
+// file count, character count, and an estimated (never claimed exact) token
+// count -- plus a warning once it gets unusually large. Pure and DOM-free:
+// `computeSelectionStats` takes already-known data (the checked paths, the
+// content cache) and returns numbers; `formatSelectionStats` turns those
+// numbers into the one line of text the toolbar displays.
+
+// A widely-used rough heuristic for English-ish source/prose text (roughly
+// 4 characters per token for most tokenizers); deliberately not tied to any
+// specific model's real tokenizer, since this tool is vendor-neutral and
+// has no API access to a real one. Labeled "rough estimate" everywhere it's
+// shown, per issue #8's "a clearly labeled token estimate rather than
+// claiming exact model tokens" requirement.
+const CHARS_PER_TOKEN_ESTIMATE = 4;
+
+// Past this many characters, the selection is flagged as "large" in the
+// toolbar. Not tied to any specific model's context window (this tool has
+// no way to know which sidebar AI or chat model the copied text will end up
+// in) -- just a soft, order-of-magnitude heuristic (roughly 50k estimated
+// tokens) meant to catch an accidental "select everything" before it's
+// copied, not a hard limit enforced anywhere.
+const LARGE_SELECTION_CHAR_THRESHOLD = 200_000;
+
+/** Computes size statistics for `checkedPaths` (assumed already the current
+ * selection) using whatever content is already available in
+ * `fileContentCache` -- a checked path with no cache entry yet (still being
+ * fetched) contributes to `fileCount` but not yet to `charCount`, and is
+ * counted in `pendingCount` so the caller can say so rather than silently
+ * under-reporting the total. */
+export function computeSelectionStats(checkedPaths, fileContentCache) {
+  let charCount = 0;
+  let pendingCount = 0;
+
+  for (const path of checkedPaths) {
+    const content = fileContentCache.get(path);
+    if (content === undefined) {
+      pendingCount += 1;
+    } else {
+      charCount += content.length;
+    }
+  }
+
+  return {
+    fileCount: checkedPaths.length,
+    pendingCount,
+    charCount,
+    estimatedTokens: Math.ceil(charCount / CHARS_PER_TOKEN_ESTIMATE),
+    isLarge: charCount > LARGE_SELECTION_CHAR_THRESHOLD,
+  };
+}
+
+/** Inserts a "," every three digits, e.g. 1234567 -> "1,234,567". A small
+ * hand-rolled formatter rather than `Number.prototype.toLocaleString()`:
+ * `toLocaleString()`'s grouping/separator depends on the runtime's available
+ * ICU data and default locale, which can differ between a full browser and a
+ * minimal Node build (including this project's own test runner) -- this
+ * keeps the displayed (and tested) format identical everywhere. */
+export function formatWithThousandsSeparator(value) {
+  return value.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+}
+
+/** Formats a [`computeSelectionStats`] result as the one line of text the
+ * content toolbar displays. */
+export function formatSelectionStats(stats) {
+  const { fileCount, pendingCount, charCount, estimatedTokens, isLarge } = stats;
+
+  if (fileCount === 0) return "No files selected.";
+
+  const fileLabel = fileCount === 1 ? "1 file selected" : `${fileCount} files selected`;
+  const pendingSuffix = pendingCount > 0 ? ` (${pendingCount} still loading)` : "";
+  const base = `${fileLabel}${pendingSuffix} · ${formatWithThousandsSeparator(
+    charCount
+  )} characters · ~${formatWithThousandsSeparator(estimatedTokens)} tokens (rough estimate)`;
+
+  return isLarge ? `${base} · ⚠ large selection` : base;
 }
 
 // ---- Search filter ----
@@ -1720,15 +1805,21 @@ function globalCopyMenuItems() {
   return items;
 }
 
-/** Rebuilds the content pane's toolbar: the "N files open" count and the
- * "Copy all checked" button cluster. Called every time the open-files list
- * might have changed (from `renderFilePanels`) and once at startup (from
- * `init`), since `state.openFiles`/`state.checked` are otherwise only
- * updated as a side effect of tree/checkbox interactions this toolbar has no
- * other hook into. */
+/** Rebuilds the content pane's toolbar: the "N files open" count, the
+ * selection size statistics (issue #8), and the "Copy all checked" button
+ * cluster. Called every time the open-files list or a file's cached content
+ * might have changed (from `renderFilePanels`, so the character/token counts
+ * stay live as each checked file's content finishes loading) and once at
+ * startup (from `init`), since `state.openFiles`/`state.checked` are
+ * otherwise only updated as a side effect of tree/checkbox interactions this
+ * toolbar has no other hook into. */
 function renderContentToolbar() {
   const count = state.openFiles.length;
   el.contentToolbarCount.textContent = count === 1 ? "1 file open" : `${count} files open`;
+
+  const stats = computeSelectionStats(Array.from(state.checked).sort(), state.fileContentCache);
+  el.contentToolbarStats.textContent = formatSelectionStats(stats);
+  el.contentToolbarStats.classList.toggle("content-toolbar-stats-warning", stats.isLarge);
 
   el.contentToolbarActions.innerHTML = "";
   const group = buildCopyActionGroup(
@@ -2005,14 +2096,37 @@ async function gatherFullFileEntries(paths) {
   return paths.map((path) => ({ ref: formatFileRef(path), content: contentByPath.get(path) || "" }));
 }
 
+/** Fetches `/api/diff` (issue #8) and always resolves to exactly one entry
+ * for `buildPromptContextSection`'s target-"diff" case -- never an empty
+ * array -- so that function never needs its own "nothing to embed yet"
+ * fallback for this target the way "excerpts"/"full" do. The one entry's
+ * `content` is either the real diff text, or a plain-language explanation of
+ * why there isn't one (not a Git repository, a clean working tree, or the
+ * request itself failing), so the generated prompt always reads as a
+ * complete sentence either way. */
+async function gatherDiffEntries() {
+  try {
+    const response = await fetch(apiUrl("/api/diff"));
+    if (!response.ok) {
+      return [{ content: `(failed to load the Git diff: HTTP ${response.status})` }];
+    }
+    const data = await response.json();
+    if (!data.isGitRepo) {
+      return [{ content: "(This directory is not a Git repository, so there is no diff to show.)" }];
+    }
+    if (!data.diff) {
+      return [{ content: "(No local changes: the working tree is clean.)" }];
+    }
+    return [{ content: data.diff }];
+  } catch (err) {
+    return [{ content: `(failed to load the Git diff: ${err && err.message ? err.message : err})` }];
+  }
+}
+
 /** Gathers the composer's current form values plus whatever `state` data
  * `buildPromptText` needs for them, resolves any content the chosen context
- * mode requires embedding, and writes the generated prompt into the result
- * textarea. Skips gathering entirely for target "diff": `buildPromptText`
- * always discards `contextEntries` for that target (there's no diff content
- * to embed -- see `buildPromptContextSection`'s doc comment), so fetching
- * checked/selected files' content in that case would only be wasted network
- * I/O for a result nothing ever reads. */
+ * mode (or, for target "diff", the diff itself) requires embedding, and
+ * writes the generated prompt into the result textarea. */
 async function generatePrompt() {
   const goal = el.promptGoal.value;
   const target = el.promptTarget.value;
@@ -2032,12 +2146,12 @@ async function generatePrompt() {
   );
 
   let contextEntries = [];
-  if (target !== "diff") {
-    if (contextMode === "excerpts") {
-      contextEntries = await gatherExcerptEntries(lineSelectionEntries);
-    } else if (contextMode === "full") {
-      contextEntries = await gatherFullFileEntries(checkedPaths);
-    }
+  if (target === "diff") {
+    contextEntries = await gatherDiffEntries();
+  } else if (contextMode === "excerpts") {
+    contextEntries = await gatherExcerptEntries(lineSelectionEntries);
+  } else if (contextMode === "full") {
+    contextEntries = await gatherFullFileEntries(checkedPaths);
   }
 
   el.promptResult.value = buildPromptText({
@@ -2064,6 +2178,7 @@ if (typeof document !== "undefined") {
     filePanels: document.getElementById("file-panels"),
     contentEmptyHint: document.getElementById("content-empty-hint"),
     contentToolbarCount: document.getElementById("content-toolbar-count"),
+    contentToolbarStats: document.getElementById("content-toolbar-stats"),
     contentToolbarActions: document.getElementById("content-toolbar-actions"),
     explorerPane: document.getElementById("explorer-pane"),
     resizer: document.getElementById("resizer"),

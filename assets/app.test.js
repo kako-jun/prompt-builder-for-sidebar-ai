@@ -41,6 +41,9 @@ import {
   buildPromptText,
   formatInlineCode,
   sliceSelectedLines,
+  computeSelectionStats,
+  formatWithThousandsSeparator,
+  formatSelectionStats,
 } from "./app.js";
 
 // ---- extensionOf ----
@@ -962,6 +965,115 @@ describe("sliceSelectedLines", () => {
   });
 });
 
+// ---- Selection size statistics (issue #8) ----
+
+describe("computeSelectionStats", () => {
+  test("returns all zeros for an empty selection", () => {
+    const stats = computeSelectionStats([], new Map());
+    assert.deepEqual(stats, {
+      fileCount: 0,
+      pendingCount: 0,
+      charCount: 0,
+      estimatedTokens: 0,
+      isLarge: false,
+    });
+  });
+
+  test("sums character counts across every checked path with cached content", () => {
+    const cache = new Map([
+      ["a.js", "1234"],
+      ["b.js", "12345678"],
+    ]);
+    const stats = computeSelectionStats(["a.js", "b.js"], cache);
+    assert.equal(stats.fileCount, 2);
+    assert.equal(stats.pendingCount, 0);
+    assert.equal(stats.charCount, 12);
+  });
+
+  test("counts a checked path with no cache entry yet as pending, not zero characters", () => {
+    const cache = new Map([["a.js", "1234"]]);
+    const stats = computeSelectionStats(["a.js", "still-loading.js"], cache);
+    assert.equal(stats.fileCount, 2);
+    assert.equal(stats.pendingCount, 1);
+    assert.equal(stats.charCount, 4);
+  });
+
+  test("rounds the estimated token count up, never truncating a partial token to zero", () => {
+    const stats = computeSelectionStats(["a.js"], new Map([["a.js", "12345"]]));
+    // 5 characters / 4 chars-per-token = 1.25 -> should round up to 2, not
+    // truncate down to 1.
+    assert.equal(stats.estimatedTokens, 2);
+  });
+
+  test("flags isLarge only once character count exceeds the threshold", () => {
+    const justUnder = computeSelectionStats(["a.js"], new Map([["a.js", "x".repeat(200_000)]]));
+    assert.equal(justUnder.isLarge, false);
+
+    const over = computeSelectionStats(["a.js"], new Map([["a.js", "x".repeat(200_001)]]));
+    assert.equal(over.isLarge, true);
+  });
+});
+
+describe("formatWithThousandsSeparator", () => {
+  test("leaves a number under 1000 unchanged", () => {
+    assert.equal(formatWithThousandsSeparator(42), "42");
+  });
+
+  test("inserts a comma every three digits", () => {
+    assert.equal(formatWithThousandsSeparator(1234567), "1,234,567");
+  });
+
+  test("handles exactly three digits with no leading comma", () => {
+    assert.equal(formatWithThousandsSeparator(999), "999");
+    assert.equal(formatWithThousandsSeparator(1000), "1,000");
+  });
+
+  test("handles zero", () => {
+    assert.equal(formatWithThousandsSeparator(0), "0");
+  });
+});
+
+describe("formatSelectionStats", () => {
+  test("reports 'No files selected.' for an empty selection", () => {
+    const stats = computeSelectionStats([], new Map());
+    assert.equal(formatSelectionStats(stats), "No files selected.");
+  });
+
+  test("uses singular phrasing for exactly one file", () => {
+    const stats = computeSelectionStats(["a.js"], new Map([["a.js", "abcd"]]));
+    assert.match(formatSelectionStats(stats), /^1 file selected/);
+  });
+
+  test("uses plural phrasing for more than one file", () => {
+    const stats = computeSelectionStats(
+      ["a.js", "b.js"],
+      new Map([
+        ["a.js", "ab"],
+        ["b.js", "cd"],
+      ])
+    );
+    assert.match(formatSelectionStats(stats), /^2 files selected/);
+  });
+
+  test("notes a pending count when some checked files haven't loaded yet", () => {
+    const stats = computeSelectionStats(["a.js", "b.js"], new Map([["a.js", "abcd"]]));
+    assert.match(formatSelectionStats(stats), /\(1 still loading\)/);
+  });
+
+  test("omits the pending note once every checked file has loaded", () => {
+    const stats = computeSelectionStats(["a.js"], new Map([["a.js", "abcd"]]));
+    assert.doesNotMatch(formatSelectionStats(stats), /still loading/);
+  });
+
+  test("includes a large-selection warning only when isLarge is true", () => {
+    const small = computeSelectionStats(["a.js"], new Map([["a.js", "abcd"]]));
+    assert.doesNotMatch(formatSelectionStats(small), /large selection/);
+
+    const large = computeSelectionStats(["a.js"], new Map([["a.js", "x".repeat(200_001)]]));
+    assert.match(formatSelectionStats(large), /⚠ large selection$/);
+  });
+});
+
 // ---- formatSingleFile ----
 
 describe("formatSingleFile", () => {
@@ -1572,13 +1684,27 @@ describe("buildPromptContextSection", () => {
     assert.match(buildPromptContextSection("full", []), /No files are currently checked/);
   });
 
-  test("target 'diff' always returns the unavailability note, regardless of context mode or entries", () => {
+  test("target 'diff' embeds the diff entry's content under a '## Context' heading, in a 'diff'-tagged fence, regardless of context mode", () => {
     for (const mode of ["page", "excerpts", "full"]) {
-      const note = buildPromptContextSection(mode, [{ ref: "@file:unrelated.js", content: "x" }], "diff");
-      assert.match(note, /Git diff support isn't available/);
-      assert.doesNotMatch(note, /## Context/);
-      assert.doesNotMatch(note, /unrelated\.js/);
+      const section = buildPromptContextSection(mode, [{ content: "diff --git a/x b/x\n+added" }], "diff");
+      assert.match(section, /^## Context/);
+      assert.match(section, /### Git diff/);
+      assert.match(section, /```diff\n/);
+      assert.match(section, /diff --git a\/x b\/x/);
+      assert.match(section, /\+added/);
     }
+  });
+
+  test("target 'diff' falls back to an explanatory placeholder when no entry is given at all", () => {
+    for (const mode of ["page", "excerpts", "full"]) {
+      assert.match(buildPromptContextSection(mode, [], "diff"), /No Git diff information is available/);
+      assert.match(buildPromptContextSection(mode, undefined, "diff"), /No Git diff information is available/);
+    }
+  });
+
+  test("target 'diff' escalates the fence past any '```' already inside the diff content", () => {
+    const section = buildPromptContextSection("page", [{ content: "some content with ```\nembedded fence" }], "diff");
+    assert.match(section, /````diff\n/);
   });
 });
 
@@ -1665,22 +1791,22 @@ describe("buildPromptText", () => {
     assert.match(text, /downloadable file named `plan\.md`/);
   });
 
-  test("notes that Git diff support is unavailable instead of embedding fake context for target 'diff', in every context mode including 'page'", () => {
+  test("embeds real diff content for target 'diff', in every context mode including 'page'", () => {
     // "page" is included deliberately: unlike every other target, a diff is
     // never actually rendered anywhere on the page, so "page context only"
-    // relying on the sidebar AI to just read the live page would hand it a
-    // false premise there just as much as "excerpts"/"full" would.
+    // relying on the sidebar AI to just read the live page would leave it
+    // with nothing -- the diff is embedded regardless of context mode.
     for (const contextMode of ["page", "excerpts", "full"]) {
       const text = buildPromptText({
         goal: "review",
         target: "diff",
         output: "concise",
         contextMode,
-        contextEntries: [{ ref: "@file:unrelated.js", content: "should not appear" }],
+        contextEntries: [{ content: "diff --git a/x b/x\n+added line" }],
       });
-      assert.match(text, /Git diff support isn't available/);
-      assert.doesNotMatch(text, /## Context/);
-      assert.doesNotMatch(text, /should not appear/);
+      assert.match(text, /## Context/);
+      assert.match(text, /diff --git a\/x b\/x/);
+      assert.match(text, /\+added line/);
     }
   });
 });
