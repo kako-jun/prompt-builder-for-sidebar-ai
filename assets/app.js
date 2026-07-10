@@ -44,6 +44,12 @@ const state = {
   openFiles: [],
   fileContentCache: new Map(),
   collapsedPanels: new Set(),
+  // path -> { anchor, start, end }. `anchor` is the line a plain click last
+  // landed on (Shift-click ranges are measured from it); `start`/`end` are
+  // the currently highlighted range (start === end for a single-line
+  // selection). Tracked per path so selections in different open files never
+  // cross-contaminate each other's "last clicked line".
+  lineSelections: new Map(),
 };
 
 let el = {};
@@ -556,6 +562,7 @@ function closeFile(path) {
   state.openFiles = state.openFiles.filter((p) => p !== path);
   state.fileContentCache.delete(path);
   state.collapsedPanels.delete(path);
+  state.lineSelections.delete(path);
   renderFilePanels();
 }
 
@@ -594,10 +601,24 @@ function buildFilePanel(path) {
   });
   header.appendChild(toggle);
 
+  const titleWrap = document.createElement("div");
+  titleWrap.className = "file-panel-title-wrap";
+
   const heading = document.createElement("h2");
   heading.className = "file-panel-title";
   heading.textContent = path;
-  header.appendChild(heading);
+  titleWrap.appendChild(heading);
+
+  const fileRef = document.createElement("span");
+  fileRef.className = "file-panel-ref";
+  fileRef.textContent = formatFileRef(path);
+  titleWrap.appendChild(fileRef);
+
+  header.appendChild(titleWrap);
+
+  const linesRef = document.createElement("span");
+  linesRef.className = "file-panel-lines-ref";
+  header.appendChild(linesRef);
 
   article.appendChild(header);
 
@@ -605,14 +626,116 @@ function buildFilePanel(path) {
     const pre = document.createElement("pre");
     pre.className = "file-panel-body";
     const code = document.createElement("code");
-    code.textContent = state.fileContentCache.has(path)
-      ? state.fileContentCache.get(path)
-      : "Loading…";
+    code.className = "file-panel-code";
+
+    if (!state.fileContentCache.has(path)) {
+      code.textContent = "Loading…";
+    } else {
+      buildCodeLines(code, path, state.fileContentCache.get(path));
+    }
+
     pre.appendChild(code);
     article.appendChild(pre);
   }
 
+  updateLineSelectionDom(path, article);
+
   return article;
+}
+
+/** Splits `content` into `.code-line` rows, each holding a `user-select:
+ * none` line-number cell (so dragging across code to copy it never picks up
+ * the numbers) and the line's own text in a separate cell. A trailing empty
+ * element from a final "\n" is dropped so the displayed line count matches
+ * what an editor would show, not an off-by-one over-count. */
+function buildCodeLines(code, path, content) {
+  const lines = content.split("\n");
+  if (lines.length > 1 && lines[lines.length - 1] === "") {
+    lines.pop();
+  }
+
+  code.style.setProperty("--line-number-width", `${String(lines.length).length}ch`);
+
+  lines.forEach((lineText, index) => {
+    const lineNumber = index + 1;
+
+    const lineRow = document.createElement("span");
+    lineRow.className = "code-line";
+    lineRow.dataset.lineNumber = String(lineNumber);
+
+    const numberCell = document.createElement("span");
+    numberCell.className = "line-number";
+    numberCell.textContent = String(lineNumber);
+    numberCell.addEventListener("click", (event) => {
+      handleLineClick(path, lineNumber, event.shiftKey);
+    });
+    lineRow.appendChild(numberCell);
+
+    const contentCell = document.createElement("span");
+    contentCell.className = "line-content";
+    contentCell.textContent = lineText;
+    lineRow.appendChild(contentCell);
+
+    code.appendChild(lineRow);
+  });
+}
+
+/** Finds the open file panel `<article>` for `path`, or `null` if that file
+ * isn't currently open. Iterates `el.filePanels`'s direct children instead
+ * of a `querySelector` attribute match, since a `path` can contain
+ * characters (quotes, etc.) that would need escaping in a CSS selector. */
+function findFilePanelElement(path) {
+  for (const child of el.filePanels.children) {
+    if (child.dataset.path === path) return child;
+  }
+  return null;
+}
+
+// ---- Line click / Shift-click range selection ----
+
+function handleLineClick(path, lineNumber, shiftKey) {
+  const current = state.lineSelections.get(path);
+
+  if (shiftKey && current) {
+    setLineSelection(path, current.anchor, current.anchor, lineNumber);
+  } else {
+    setLineSelection(path, lineNumber, lineNumber, lineNumber);
+  }
+}
+
+/** Records the selection for `path` (`anchor` is the plain-click line that
+ * Shift-click ranges are measured from; the highlighted range is always
+ * `min`/`max` of the two endpoints regardless of click order) and reflects
+ * it in that file panel's DOM. */
+function setLineSelection(path, anchor, endpointA, endpointB) {
+  const start = Math.min(endpointA, endpointB);
+  const end = Math.max(endpointA, endpointB);
+  state.lineSelections.set(path, { anchor, start, end });
+  updateLineSelectionDom(path);
+}
+
+/** Applies the current `state.lineSelections` entry for `path` (if any) to
+ * that file's already-rendered panel: toggles `.line-selected` on the
+ * matching `.code-line` rows and updates the panel's `@lines:...` display.
+ * Takes an optional already-known `panel` element (used from `buildFilePanel`,
+ * where the panel isn't attached to `el.filePanels` yet) and otherwise looks
+ * it up via `findFilePanelElement`. A no-op if the panel can't be found
+ * (e.g. the file isn't open). */
+function updateLineSelectionDom(path, panel = findFilePanelElement(path)) {
+  if (!panel) return;
+
+  const selection = state.lineSelections.get(path);
+
+  panel.querySelectorAll(".code-line").forEach((row) => {
+    const lineNumber = Number(row.dataset.lineNumber);
+    const selected = Boolean(selection && lineNumber >= selection.start && lineNumber <= selection.end);
+    row.classList.toggle("line-selected", selected);
+  });
+
+  const linesRefEl = panel.querySelector(".file-panel-lines-ref");
+  if (!linesRefEl) return;
+  linesRefEl.textContent = selection ? formatLinesRef(path, selection.start, selection.end) : "";
+  linesRefEl.style.display = selection ? "" : "none";
 }
 
 // ---- Recently opened files (localStorage) ----

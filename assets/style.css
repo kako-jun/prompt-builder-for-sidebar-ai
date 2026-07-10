@@ -369,12 +369,40 @@ body.resizing {
   flex-shrink: 0;
 }
 
+.file-panel-title-wrap {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+
 .file-panel-title {
   margin: 0;
   font-size: 0.85rem;
   font-family: var(--font-mono);
   overflow-wrap: break-word;
   word-break: break-all;
+}
+
+/* The stable "@file:<path>" reference for this panel (issue #5); always
+   shown, since it doesn't depend on any selection. */
+.file-panel-ref {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--text-dim);
+  overflow-wrap: break-word;
+  word-break: break-all;
+}
+
+/* The "@lines:<path>#L..." reference for the currently selected line range;
+   hidden (via inline style, toggled in app.js) when nothing is selected. */
+.file-panel-lines-ref {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--accent);
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .file-panel-body {
@@ -384,5 +412,43 @@ body.resizing {
   font-family: var(--font-mono);
   font-size: 0.82rem;
   line-height: 1.5;
+}
+
+.file-panel-code {
+  display: block;
+  /* Overridden per-panel in app.js so every line number in a given file
+     lines up regardless of how many digits the largest one needs. */
+  --line-number-width: 2ch;
+}
+
+.code-line {
+  display: flex;
+}
+
+/* Never part of a text selection, so dragging across code to copy it can
+   never pick up line-number text (issue #5 acceptance criterion). */
+.line-number {
+  user-select: none;
+  -webkit-user-select: none;
+  flex-shrink: 0;
+  width: var(--line-number-width);
+  text-align: right;
+  padding-right: 0.75rem;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.line-number:hover {
+  color: var(--accent);
+}
+
+.line-content {
   white-space: pre;
+  flex: 1;
+  min-width: 0;
+}
+
+.code-line.line-selected .line-number,
+.code-line.line-selected .line-content {
+  background: rgba(91, 157, 255, 0.18);
 }
