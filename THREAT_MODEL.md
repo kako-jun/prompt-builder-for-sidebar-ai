@@ -78,9 +78,10 @@ to an AI API itself and never writes to the served directory.
 - **Validating what the user chooses to paste where.** Once text is on the
   clipboard, this tool has no further visibility or control.
 - **Exhaustive secret detection.** The `likely_secret` heuristic is a small,
-  hand-picked list of common patterns (see README.md's "Known limitations"),
-  not a secret-scanning product. A project's own `.gitignore` remains the
-  primary defense against exposing files that shouldn't be browsed at all.
+  hand-picked list of common patterns (see [docs/API.md](docs/API.md)'s
+  "Known limitations"), not a secret-scanning product. A project's own
+  `.gitignore` remains the primary defense against exposing files that
+  shouldn't be browsed at all.
 
 ## Where the tests live
 
