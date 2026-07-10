@@ -862,9 +862,11 @@ function findTreeNodeElement(path) {
 /** Expands every ancestor directory of `path` (not `path` itself) so an
  * "@dir:" reference's target is guaranteed visible in the rendered tree,
  * then scrolls to and highlights it. A no-op if `path` isn't a node in the
- * currently loaded tree at all. */
+ * currently loaded tree at all, or if it names a file rather than a
+ * directory (an "@dir:" reference to a file path is out of contract, not a
+ * fallback for revealing that file's tree row). */
 function revealDirNode(path) {
-  if (!state.nodesByPath.has(path)) return;
+  if (!state.nodesByPath.get(path)?.isDir) return;
 
   const segments = path.split("/");
   for (let i = 1; i < segments.length; i++) {
