@@ -1684,9 +1684,27 @@ describe("buildPromptContextSection", () => {
     assert.match(buildPromptContextSection("full", []), /No files are currently checked/);
   });
 
-  test("target 'diff' embeds the diff entry's content under a '## Context' heading, in a 'diff'-tagged fence, regardless of context mode", () => {
-    for (const mode of ["page", "excerpts", "full"]) {
-      const section = buildPromptContextSection(mode, [{ content: "diff --git a/x b/x\n+added" }], "diff");
+  test("target 'diff' with context mode 'page' never embeds the diff, and explains why instead", () => {
+    // Deliberately does not depend on contextEntries at all: "page" means
+    // "don't embed anything" for target diff just like it does for every
+    // other target, even if real diff content was already fetched.
+    const section = buildPromptContextSection(
+      "page",
+      [{ content: "diff --git a/x b/x\n+added", isDiff: true }],
+      "diff"
+    );
+    assert.match(section, /Page context only.*can't include it here/s);
+    assert.doesNotMatch(section, /diff --git a\/x b\/x/);
+    assert.doesNotMatch(section, /## Context/);
+  });
+
+  test("target 'diff' with context mode 'excerpts'/'full' embeds real diff content under a '## Context' heading, in a 'diff'-tagged fence", () => {
+    for (const mode of ["excerpts", "full"]) {
+      const section = buildPromptContextSection(
+        mode,
+        [{ content: "diff --git a/x b/x\n+added", isDiff: true }],
+        "diff"
+      );
       assert.match(section, /^## Context/);
       assert.match(section, /### Git diff/);
       assert.match(section, /```diff\n/);
@@ -1695,15 +1713,32 @@ describe("buildPromptContextSection", () => {
     }
   });
 
+  test("target 'diff' with context mode 'excerpts'/'full' embeds an explanatory (non-diff) entry as plain text, not inside a diff fence", () => {
+    for (const mode of ["excerpts", "full"]) {
+      const section = buildPromptContextSection(
+        mode,
+        [{ content: "(No local changes: the working tree is clean.)", isDiff: false }],
+        "diff"
+      );
+      assert.equal(section, "(No local changes: the working tree is clean.)");
+      assert.doesNotMatch(section, /```/);
+      assert.doesNotMatch(section, /## Context/);
+    }
+  });
+
   test("target 'diff' falls back to an explanatory placeholder when no entry is given at all", () => {
-    for (const mode of ["page", "excerpts", "full"]) {
+    for (const mode of ["excerpts", "full"]) {
       assert.match(buildPromptContextSection(mode, [], "diff"), /No Git diff information is available/);
       assert.match(buildPromptContextSection(mode, undefined, "diff"), /No Git diff information is available/);
     }
   });
 
   test("target 'diff' escalates the fence past any '```' already inside the diff content", () => {
-    const section = buildPromptContextSection("page", [{ content: "some content with ```\nembedded fence" }], "diff");
+    const section = buildPromptContextSection(
+      "full",
+      [{ content: "some content with ```\nembedded fence", isDiff: true }],
+      "diff"
+    );
     assert.match(section, /````diff\n/);
   });
 });
@@ -1791,22 +1826,31 @@ describe("buildPromptText", () => {
     assert.match(text, /downloadable file named `plan\.md`/);
   });
 
-  test("embeds real diff content for target 'diff', in every context mode including 'page'", () => {
-    // "page" is included deliberately: unlike every other target, a diff is
-    // never actually rendered anywhere on the page, so "page context only"
-    // relying on the sidebar AI to just read the live page would leave it
-    // with nothing -- the diff is embedded regardless of context mode.
-    for (const contextMode of ["page", "excerpts", "full"]) {
+  test("embeds real diff content for target 'diff' in context modes 'excerpts'/'full'", () => {
+    for (const contextMode of ["excerpts", "full"]) {
       const text = buildPromptText({
         goal: "review",
         target: "diff",
         output: "concise",
         contextMode,
-        contextEntries: [{ content: "diff --git a/x b/x\n+added line" }],
+        contextEntries: [{ content: "diff --git a/x b/x\n+added line", isDiff: true }],
       });
       assert.match(text, /## Context/);
       assert.match(text, /diff --git a\/x b\/x/);
       assert.match(text, /\+added line/);
     }
+  });
+
+  test("target 'diff' with context mode 'page' explains why the diff isn't embedded, instead of overriding the user's choice", () => {
+    const text = buildPromptText({
+      goal: "review",
+      target: "diff",
+      output: "concise",
+      contextMode: "page",
+      contextEntries: [{ content: "diff --git a/x b/x\n+added line", isDiff: true }],
+    });
+    assert.doesNotMatch(text, /## Context/);
+    assert.doesNotMatch(text, /diff --git a\/x b\/x/);
+    assert.match(text, /Page context only/);
   });
 });

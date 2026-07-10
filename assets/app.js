@@ -852,18 +852,27 @@ export function describePromptOutput(output, filename) {
  * to contain backticks or a Markdown heading can never corrupt the
  * surrounding prompt structure the way bare, unfenced text would).
  *
- * `target === "diff"` is handled first and unconditionally, regardless of
- * `contextMode`: a diff is never rendered anywhere on the page for a sidebar
- * AI to read on its own the way an open file panel is, so unlike every other
- * target, "page context only"'s usual "the AI will just read the live page"
- * assumption never holds for it -- the diff (via `gatherDiffEntries`, which
- * always resolves to exactly one entry, real diff text or an explanatory
- * placeholder for "not a Git repository"/"no local changes"/a fetch failure)
- * is embedded regardless of the chosen context mode, and choosing a Target
- * other than "excerpts"/"full" for it wouldn't leave out anything meaningful
- * to embed anyway -- a diff is already a purpose-built excerpt of the
- * changes, not a whole file, so there's no separate "just an excerpt of the
- * diff" mode to speak of.
+ * `target === "diff"` still respects `contextMode` like every other target:
+ * "page context only" means "embed nothing, the sidebar AI reads the page
+ * itself" -- which for every *other* target is safe because that target's
+ * content genuinely is visible on the page, but a diff never is. Rather than
+ * silently overriding the user's explicit "don't embed anything" choice
+ * (uncommitted diffs routinely carry secrets, debug scaffolding, or other
+ * things a user may deliberately not want handed to a third-party AI), that
+ * mismatch is surfaced as an explanatory note telling them to switch modes
+ * -- the same "can't do what you asked, here's why" honesty this function
+ * already uses for "nothing selected/checked yet" below, not a reason to
+ * override the choice itself.
+ *
+ * For "excerpts"/"full" (no separate "just an excerpt of the diff" concept
+ * exists -- a diff is already a purpose-built excerpt of the changes, so
+ * both modes behave identically here), `contextEntries` comes from
+ * `gatherDiffEntries`, which always resolves to exactly one entry carrying
+ * either real diff text (`isDiff: true`, wrapped in a fenced, `diff`-tagged
+ * code block) or plain-language explanatory prose for "not a Git
+ * repository"/"no local changes"/a fetch failure (`isDiff: false`, embedded
+ * as-is rather than inside a code fence that would make a plain sentence
+ * look like broken diff-formatted code).
  *
  * For every other target, "page context only" returns `""` (rely on the
  * sidebar AI reading the live page itself, so nothing gets embedded in the
@@ -873,8 +882,12 @@ export function describePromptOutput(output, filename) {
  * have to special-case "mode wants content but there isn't any" itself. */
 export function buildPromptContextSection(contextMode, contextEntries, target) {
   if (target === "diff") {
+    if (contextMode === "page") {
+      return '(Git diff content is never shown on the page itself, so "Page context only" can\'t include it here. Switch context mode to "Referenced excerpts" or "Full selected files" to embed the diff.)';
+    }
     const entry = contextEntries && contextEntries[0];
     if (!entry) return "(No Git diff information is available.)";
+    if (!entry.isDiff) return entry.content;
     const fence = markdownFenceFor(entry.content);
     return `## Context\n\n### Git diff\n\n${fence}diff\n${entry.content}\n${fence}\n`;
   }
@@ -1817,7 +1830,11 @@ function renderContentToolbar() {
   const count = state.openFiles.length;
   el.contentToolbarCount.textContent = count === 1 ? "1 file open" : `${count} files open`;
 
-  const stats = computeSelectionStats(Array.from(state.checked).sort(), state.fileContentCache);
+  // Order doesn't matter for computeSelectionStats's sums, so skip the sort
+  // this function's other Array.from(state.checked) call sites need for
+  // deterministic output ordering -- this one has no such requirement, and
+  // this function runs on every single file-panel render.
+  const stats = computeSelectionStats(Array.from(state.checked), state.fileContentCache);
   el.contentToolbarStats.textContent = formatSelectionStats(stats);
   el.contentToolbarStats.classList.toggle("content-toolbar-stats-warning", stats.isLarge);
 
@@ -2099,27 +2116,47 @@ async function gatherFullFileEntries(paths) {
 /** Fetches `/api/diff` (issue #8) and always resolves to exactly one entry
  * for `buildPromptContextSection`'s target-"diff" case -- never an empty
  * array -- so that function never needs its own "nothing to embed yet"
- * fallback for this target the way "excerpts"/"full" do. The one entry's
- * `content` is either the real diff text, or a plain-language explanation of
- * why there isn't one (not a Git repository, a clean working tree, or the
- * request itself failing), so the generated prompt always reads as a
- * complete sentence either way. */
+ * fallback for this target the way "excerpts"/"full" do. `ref: "@diff"`
+ * keeps the entry shaped like every other gather* function's output (`{
+ * ref, content }`) even though `buildPromptContextSection` doesn't currently
+ * read it, so a future refactor that unifies the diff branch with the
+ * shared `formatReferenceWithCode` path won't find a silently-missing `ref`.
+ * `isDiff` distinguishes the two kinds of `content` this can resolve to:
+ * `true` for real diff text (rendered inside a fenced, `diff`-tagged code
+ * block), `false` for plain-language explanatory prose -- not a Git
+ * repository, a clean working tree, or the request itself failing -- which
+ * must NOT be wrapped in a diff-language code fence the way real diff text
+ * is, or a plain sentence would visually read as malformed diff output. */
 async function gatherDiffEntries() {
   try {
     const response = await fetch(apiUrl("/api/diff"));
     if (!response.ok) {
-      return [{ content: `(failed to load the Git diff: HTTP ${response.status})` }];
+      return [
+        { ref: "@diff", content: `(failed to load the Git diff: HTTP ${response.status})`, isDiff: false },
+      ];
     }
     const data = await response.json();
     if (!data.isGitRepo) {
-      return [{ content: "(This directory is not a Git repository, so there is no diff to show.)" }];
+      return [
+        {
+          ref: "@diff",
+          content: "(This directory is not a Git repository, so there is no diff to show.)",
+          isDiff: false,
+        },
+      ];
     }
     if (!data.diff) {
-      return [{ content: "(No local changes: the working tree is clean.)" }];
+      return [{ ref: "@diff", content: "(No local changes: the working tree is clean.)", isDiff: false }];
     }
-    return [{ content: data.diff }];
+    return [{ ref: "@diff", content: data.diff, isDiff: true }];
   } catch (err) {
-    return [{ content: `(failed to load the Git diff: ${err && err.message ? err.message : err})` }];
+    return [
+      {
+        ref: "@diff",
+        content: `(failed to load the Git diff: ${err && err.message ? err.message : err})`,
+        isDiff: false,
+      },
+    ];
   }
 }
 
@@ -2147,7 +2184,12 @@ async function generatePrompt() {
 
   let contextEntries = [];
   if (target === "diff") {
-    contextEntries = await gatherDiffEntries();
+    // "page" mode never embeds the diff (see buildPromptContextSection's
+    // doc comment for why) -- skip fetching it at all, since the result
+    // would only be discarded.
+    if (contextMode !== "page") {
+      contextEntries = await gatherDiffEntries();
+    }
   } else if (contextMode === "excerpts") {
     contextEntries = await gatherExcerptEntries(lineSelectionEntries);
   } else if (contextMode === "full") {
