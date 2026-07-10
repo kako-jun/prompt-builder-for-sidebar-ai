@@ -1094,7 +1094,11 @@ mod tests {
             fs::write(scratch.path().join(format!("f{i}.txt")), "x").unwrap();
         }
 
-        let (entries, truncated) = discover_tree_with_limit(scratch.path(), 3);
+        // The walk visits the root directory itself first (depth 0, always
+        // filtered out, never collected) before any child, so it costs one
+        // slot of the budget too: max_entries=4 here is "room for the root
+        // plus 3 files", not "room for 3 files".
+        let (entries, truncated) = discover_tree_with_limit(scratch.path(), 4);
         assert_eq!(entries.len(), 3);
         assert!(truncated);
     }
