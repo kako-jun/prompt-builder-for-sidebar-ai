@@ -624,3 +624,37 @@ body.resizing {
   color: var(--text-dim);
   font-size: 0.8rem;
 }
+
+/* ---- Copy toast (fallback for a copy button detached mid-copy) ----
+   Sits outside every re-rendered container (tree-root/file-panels/
+   content-toolbar-actions all get replaced wholesale via `innerHTML = ""`),
+   so it stays reachable even when the button a copy action started from has
+   since been removed from the DOM by an unrelated re-render. */
+.copy-toast {
+  position: fixed;
+  right: 1rem;
+  bottom: 1rem;
+  z-index: 100;
+  max-width: 20rem;
+  background: var(--bg-panel-alt);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.8rem;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+
+.copy-toast[hidden] {
+  display: none;
+}
+
+.copy-toast-success {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.copy-toast-failure {
+  border-color: var(--danger);
+  color: var(--danger);
+}

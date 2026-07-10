@@ -1182,14 +1182,49 @@ export async function copyTextToClipboard(text) {
   }
 }
 
+let copyToastTimeoutId = null;
+
+/** Shows a transient toast notification at the page level, for the case
+ * where the button a copy action started from no longer exists in the DOM
+ * by the time the (possibly slow, multi-file) copy finishes -- see
+ * `flashCopyFeedback`'s `isConnected` check below. Unlike `flashCopyFeedback`,
+ * this has nowhere to read an "original label" back from, so it always just
+ * shows and then hides itself after `COPY_FEEDBACK_MS`, the same duration the
+ * on-button cue uses. */
+function showCopyToast(ok, error) {
+  if (!el.copyToast) return;
+  el.copyToast.textContent = ok ? "Copied to clipboard." : `Copy failed: ${error || "unknown error"}`;
+  el.copyToast.classList.toggle("copy-toast-success", ok);
+  el.copyToast.classList.toggle("copy-toast-failure", !ok);
+  el.copyToast.hidden = false;
+
+  window.clearTimeout(copyToastTimeoutId);
+  copyToastTimeoutId = window.setTimeout(() => {
+    el.copyToast.hidden = true;
+  }, COPY_FEEDBACK_MS);
+}
+
 /** Shows a transient "Copied!"/"Copy failed" label on `button`, reverting to
  * its original label after `COPY_FEEDBACK_MS` -- the same fade-back shape as
  * `flashHighlight`'s `.nav-flash` cue (issue #5), just on a button's text
  * instead of an outline. The button is disabled for the duration so a second
  * click can't pile up overlapping reverts; on failure, `error` is surfaced
  * via the button's `title` tooltip, since the label itself only has room for
- * a short word. */
+ * a short word.
+ *
+ * A multi-file copy re-fetches every file before writing to the clipboard
+ * (`fetchFileContents`), which can take long enough for the user to trigger a
+ * re-render (e.g. toggling a checkbox rebuilds the tree/file panels via
+ * `innerHTML = ""`) that detaches `button` from the document before this
+ * runs. Reflecting success/failure on a detached button would be silently
+ * invisible, so that case falls back to the page-level `showCopyToast`
+ * instead. */
 function flashCopyFeedback(button, ok, error) {
+  if (!button.isConnected) {
+    showCopyToast(ok, error);
+    return;
+  }
+
   const originalLabel = button.dataset.copyOriginalLabel ?? button.textContent;
   button.dataset.copyOriginalLabel = originalLabel;
 
@@ -1654,6 +1689,7 @@ if (typeof document !== "undefined") {
     contentToolbarActions: document.getElementById("content-toolbar-actions"),
     explorerPane: document.getElementById("explorer-pane"),
     resizer: document.getElementById("resizer"),
+    copyToast: document.getElementById("copy-toast"),
   };
 
   init();
