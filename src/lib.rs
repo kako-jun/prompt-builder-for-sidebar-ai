@@ -12,6 +12,7 @@ use uuid::Uuid;
 
 pub mod diff;
 pub mod discovery;
+pub mod github_root;
 
 use diff::compute_diff;
 use discovery::{discover_tree, is_probably_binary, FileEntry};

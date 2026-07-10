@@ -24,7 +24,7 @@ A local browser that builds prompts for sidebar AI from your files.
 cargo run -- [ROOT]
 ```
 
-- `ROOT` is an optional directory to serve; it defaults to the current directory (`.`).
+- `ROOT` is an optional directory to serve, or a public GitHub repository URL; it defaults to the current directory (`.`).
 - The root must exist and be a directory; otherwise the command prints an error and exits non-zero.
 - The server binds to an available port on `127.0.0.1` only (loopback, no external exposure).
 - An unguessable session URL (`http://127.0.0.1:<port>/<token>`) is printed and opened in your default browser. Only that exact path responds; every other path returns 404.
@@ -36,6 +36,25 @@ Example:
 cargo run -- .
 cargo run -- ~/repos/my-project
 ```
+
+### Serving a GitHub repository URL
+
+`ROOT` also accepts a public GitHub repository URL --
+`https://github.com/{owner}/{repo}`, optionally with a `.git` suffix or a
+`/tree/{ref}` suffix to check out a specific branch or tag:
+
+```console
+cargo run -- https://github.com/owner/repo
+cargo run -- https://github.com/owner/repo/tree/some-branch
+```
+
+This shallow-clones (`git clone --depth 1`) the repository into a temporary
+directory and serves it exactly like any other local root -- `git` must be
+installed and on `PATH`. Only public repositories are supported; a private
+repository, a nonexistent repository or ref, and a network failure all
+surface as the same clone error (git's own message is included). The
+temporary clone is removed automatically when the server exits, including
+after Ctrl+C.
 
 ## Explorer UI
 

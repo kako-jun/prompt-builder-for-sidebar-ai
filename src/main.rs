@@ -1,4 +1,7 @@
 use clap::Parser;
+use prompt_builder_for_sidebar_ai::github_root::{
+    clone_github_root, parse_github_root_url, CloneError,
+};
 use prompt_builder_for_sidebar_ai::{build_router, generate_session_token, resolve_root};
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -8,16 +11,49 @@ use tokio::net::TcpListener;
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Cli {
-    /// Root directory to serve. Defaults to the current directory.
+    /// Root directory to serve, or a public GitHub repository URL
+    /// (`https://github.com/{owner}/{repo}`, optionally with `/tree/{ref}`
+    /// for a specific branch or tag). Defaults to the current directory.
     #[arg(default_value = ".")]
-    root: PathBuf,
+    root: String,
 }
 
 #[tokio::main]
 async fn main() -> ExitCode {
     let cli = Cli::parse();
 
-    let root = match resolve_root(&cli.root) {
+    // `_root_clone_guard` is never read again after this -- it only needs to
+    // stay alive until the end of `main` so its `Drop` impl removes the
+    // temporary clone directory on exit. `None` for an ordinary local-path
+    // `ROOT`, which never creates one.
+    let (raw_root, _root_clone_guard) = match parse_github_root_url(&cli.root) {
+        Some(github_url) => match clone_github_root(&github_url) {
+            Ok(guard) => {
+                let path = guard.path().to_path_buf();
+                (path, Some(guard))
+            }
+            Err(CloneError::GitNotInstalled) => {
+                eprintln!(
+                    "error: git is required to clone a GitHub repository URL; install git and try again"
+                );
+                return ExitCode::FAILURE;
+            }
+            Err(CloneError::CloneFailed(detail)) => {
+                eprintln!("error: failed to clone '{}': {detail}", cli.root);
+                eprintln!(
+                    "(this can happen for a private repository, a nonexistent repository or ref, or a network issue -- only public repositories are supported)"
+                );
+                return ExitCode::FAILURE;
+            }
+            Err(CloneError::TempDirUnavailable(detail)) => {
+                eprintln!("error: could not create a temporary directory for the clone: {detail}");
+                return ExitCode::FAILURE;
+            }
+        },
+        None => (PathBuf::from(&cli.root), None),
+    };
+
+    let root = match resolve_root(&raw_root) {
         Ok(root) => root,
         Err(err) => {
             eprintln!("error: {err}");
