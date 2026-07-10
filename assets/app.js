@@ -64,7 +64,10 @@ function apiUrl(suffix) {
 async function loadRoot() {
   try {
     const response = await fetch(apiUrl("/api/root"));
-    if (!response.ok) return;
+    if (!response.ok) {
+      el.rootBasename.textContent = `(failed to load root: HTTP ${response.status})`;
+      return;
+    }
     const data = await response.json();
     el.rootBasename.textContent = data.basename;
     el.rootPath.textContent = data.absolutePath;
@@ -76,7 +79,10 @@ async function loadRoot() {
 async function loadTree() {
   try {
     const response = await fetch(apiUrl("/api/tree"));
-    if (!response.ok) return;
+    if (!response.ok) {
+      el.treeRoot.textContent = `Failed to load the file tree (HTTP ${response.status}).`;
+      return;
+    }
     const entries = await response.json();
     state.entries = entries;
     buildTree(entries);
@@ -206,6 +212,7 @@ function renderNode(node) {
     toggle.type = "button";
     toggle.className = "tree-toggle";
     toggle.textContent = expanded ? "▾" : "▸";
+    toggle.setAttribute("aria-expanded", String(expanded));
     toggle.setAttribute("aria-label", expanded ? "Collapse directory" : "Expand directory");
     toggle.addEventListener("click", () => toggleDir(node.path));
     row.appendChild(toggle);
@@ -236,6 +243,7 @@ function renderNode(node) {
   const nameSpan = document.createElement("span");
   nameSpan.className = "tree-name";
   nameSpan.textContent = node.name;
+  nameSpan.title = node.name;
   label.appendChild(nameSpan);
 
   row.appendChild(label);
@@ -340,28 +348,57 @@ function wireSearchInput() {
   el.searchInput.addEventListener("input", applySearchFilter);
 }
 
+/** Computes, for every node in the tree rooted at `rootNode`, whether the
+ * node's own path matches `query` and whether any of its descendants do, in
+ * a single pass over the tree structure. Pulled out of `applySearchFilter`
+ * so the match decision doesn't have to re-walk the rendered DOM's
+ * descendants from every single node (an O(n^2) `querySelectorAll` call per
+ * node), and so it can be tested without a DOM. `query` should already be
+ * trimmed and lower-cased; an empty query is the caller's responsibility to
+ * short-circuit (this function doesn't special-case it). */
+export function computeSearchMatches(rootNode, query) {
+  const matchesByPath = new Map();
+
+  function visit(node) {
+    const selfMatches = node.path !== "" && node.path.toLowerCase().includes(query);
+    let descendantMatches = false;
+    for (const child of node.children.values()) {
+      visit(child);
+      const childMatch = matchesByPath.get(child.path);
+      if (childMatch.selfMatches || childMatch.descendantMatches) {
+        descendantMatches = true;
+      }
+    }
+    matchesByPath.set(node.path, { selfMatches, descendantMatches });
+  }
+
+  visit(rootNode);
+  return matchesByPath;
+}
+
 function applySearchFilter() {
   const query = el.searchInput.value.trim().toLowerCase();
   const allNodes = el.treeRoot.querySelectorAll(".tree-node");
 
-  allNodes.forEach((li) => {
-    if (query === "") {
+  if (query === "") {
+    allNodes.forEach((li) => {
       li.classList.remove("filtered-out");
       const childList = li.querySelector(":scope > .tree-list");
       if (childList) childList.classList.remove("search-open");
-      return;
-    }
+    });
+    return;
+  }
 
-    const path = (li.dataset.path || "").toLowerCase();
-    const selfMatches = path.includes(query);
-    const descendantMatches = Array.from(li.querySelectorAll(".tree-node")).some((descendant) =>
-      (descendant.dataset.path || "").toLowerCase().includes(query)
-    );
+  const matchesByPath = state.rootNode ? computeSearchMatches(state.rootNode, query) : new Map();
 
-    li.classList.toggle("filtered-out", !selfMatches && !descendantMatches);
+  allNodes.forEach((li) => {
+    const path = li.dataset.path || "";
+    const match = matchesByPath.get(path) || { selfMatches: false, descendantMatches: false };
+
+    li.classList.toggle("filtered-out", !match.selfMatches && !match.descendantMatches);
 
     const childList = li.querySelector(":scope > .tree-list");
-    if (childList) childList.classList.toggle("search-open", descendantMatches);
+    if (childList) childList.classList.toggle("search-open", match.descendantMatches);
   });
 }
 
@@ -571,6 +608,8 @@ function reopenFromRecent(path) {
 
 // ---- Explorer pane resizer ----
 
+const RESIZE_KEYBOARD_STEP = 20;
+
 function wireResizer() {
   let dragging = false;
   let startX = 0;
@@ -595,6 +634,22 @@ function wireResizer() {
     if (!dragging) return;
     dragging = false;
     document.body.classList.remove("resizing");
+  });
+
+  el.resizer.addEventListener("keydown", (event) => {
+    let delta = 0;
+    if (event.key === "ArrowLeft") {
+      delta = -RESIZE_KEYBOARD_STEP;
+    } else if (event.key === "ArrowRight") {
+      delta = RESIZE_KEYBOARD_STEP;
+    } else {
+      return;
+    }
+
+    const currentWidth = el.explorerPane.getBoundingClientRect().width;
+    const newWidth = clamp(currentWidth + delta, MIN_EXPLORER_WIDTH, MAX_EXPLORER_WIDTH);
+    el.explorerPane.style.width = `${newWidth}px`;
+    event.preventDefault();
   });
 }
 

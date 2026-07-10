@@ -8,6 +8,7 @@ import {
   computeFileDescendants,
   sortedChildren,
   describeCheckboxState,
+  computeSearchMatches,
   clamp,
   nextRecentList,
 } from "./app.js";
@@ -232,6 +233,67 @@ describe("describeCheckboxState", () => {
   test("row 4: total>0, checkedCount=total -> checked, not indeterminate", () => {
     const result = describeCheckboxState(["a", "b"], new Set(["a", "b"]));
     assert.deepEqual(result, { checked: true, indeterminate: false });
+  });
+});
+
+// ---- computeSearchMatches ----
+
+describe("computeSearchMatches", () => {
+  function buildRoot() {
+    const root = {
+      path: "",
+      name: "",
+      isDir: true,
+      children: new Map(),
+    };
+    const nodesByPath = new Map([["", root]]);
+    ensureNode(nodesByPath, "src/main.rs", false, false);
+    ensureNode(nodesByPath, "src/lib.rs", false, false);
+    ensureNode(nodesByPath, "docs/notes.md", false, false);
+    return root;
+  }
+
+  test("a file matching the query is self-matched, and its ancestor directory is descendant-matched", () => {
+    const root = buildRoot();
+    const matches = computeSearchMatches(root, "main");
+
+    assert.equal(matches.get("src/main.rs").selfMatches, true);
+    assert.equal(matches.get("src").selfMatches, false);
+    assert.equal(matches.get("src").descendantMatches, true);
+  });
+
+  test("a sibling file that does not match and has no matching descendants is unmatched", () => {
+    const root = buildRoot();
+    const matches = computeSearchMatches(root, "main");
+
+    assert.equal(matches.get("src/lib.rs").selfMatches, false);
+    assert.equal(matches.get("src/lib.rs").descendantMatches, false);
+  });
+
+  test("an unrelated directory with no matches anywhere below it is fully unmatched", () => {
+    const root = buildRoot();
+    const matches = computeSearchMatches(root, "main");
+
+    assert.equal(matches.get("docs").selfMatches, false);
+    assert.equal(matches.get("docs").descendantMatches, false);
+    assert.equal(matches.get("docs/notes.md").selfMatches, false);
+  });
+
+  test("a directory name itself matching the query is self-matched", () => {
+    const root = buildRoot();
+    const matches = computeSearchMatches(root, "docs");
+
+    assert.equal(matches.get("docs").selfMatches, true);
+  });
+
+  test("a query matching nothing produces no matched entries", () => {
+    const root = buildRoot();
+    const matches = computeSearchMatches(root, "nope-does-not-exist");
+
+    for (const [path, match] of matches) {
+      assert.equal(match.selfMatches, false, `expected ${path} to not self-match`);
+      assert.equal(match.descendantMatches, false, `expected ${path} to have no matching descendants`);
+    }
   });
 });
 
