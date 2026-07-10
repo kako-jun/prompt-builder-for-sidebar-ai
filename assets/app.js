@@ -865,6 +865,17 @@ function buildFilePanel(path) {
   linesRef.className = "file-panel-lines-ref";
   header.appendChild(linesRef);
 
+  const actions = document.createElement("div");
+  actions.className = "file-panel-actions";
+  actions.appendChild(
+    buildCopyActionGroup(
+      "Copy",
+      (button) => copyFileAs(path, "markdown", button),
+      () => filePanelCopyMenuItems(path)
+    )
+  );
+  header.appendChild(actions);
+
   article.appendChild(header);
 
   if (!collapsed) {
@@ -1307,6 +1318,62 @@ function buildCopyActionGroup(primaryLabel, onPrimary, getMenuItems) {
   });
 
   return wrap;
+}
+
+/** Copies file `path`'s current content (re-fetched, not read from the
+ * possibly-stale/"Loading…" `state.fileContentCache`) formatted as `format`,
+ * reflecting the result on `button`. */
+async function copyFileAs(path, format, button) {
+  try {
+    const [entry] = await fetchFileContents([path]);
+    const text = formatSingleFile(path, entry.content, format);
+    await copyToClipboardWithFeedback(text, button);
+  } catch (err) {
+    flashCopyFeedback(button, false, err && err.message ? err.message : String(err));
+  }
+}
+
+/** Copies `path`'s stable `@lines:...` reference together with the code in
+ * `selection`'s range (re-fetched fresh, for the same reason `copyFileAs`
+ * does), formatted as Markdown -- the app-wide default format for every
+ * "copy" primary/menu action. */
+async function copyReferenceWithCode(path, selection, button) {
+  try {
+    const [entry] = await fetchFileContents([path]);
+    const lines = entry.content.split("\n");
+    if (lines.length > 1 && lines[lines.length - 1] === "") lines.pop();
+    const selectedCode = lines.slice(selection.start - 1, selection.end).join("\n");
+    const ref = formatLinesRef(path, selection.start, selection.end);
+    const text = formatReferenceWithCode(ref, selectedCode, "markdown");
+    await copyToClipboardWithFeedback(text, button);
+  } catch (err) {
+    flashCopyFeedback(button, false, err && err.message ? err.message : String(err));
+  }
+}
+
+/** Menu items for a file panel's "⋯" button: the three non-default output
+ * formats for a whole-file copy, a reference-only copy, and -- only while
+ * `path` has an active line selection -- a reference-plus-code copy. */
+function filePanelCopyMenuItems(path) {
+  const items = ["plain", "xml", "diff"].map((format) => ({
+    label: `Copy file as ${formatLabel(format)}`,
+    onClick: (button) => copyFileAs(path, format, button),
+  }));
+
+  items.push({
+    label: "Copy reference only",
+    onClick: (button) => copyToClipboardWithFeedback(formatFileRef(path), button),
+  });
+
+  const selection = state.lineSelections.get(path);
+  if (selection) {
+    items.push({
+      label: "Copy reference + code",
+      onClick: (button) => copyReferenceWithCode(path, selection, button),
+    });
+  }
+
+  return items;
 }
 
 // ---- Recently opened files (localStorage) ----
