@@ -31,6 +31,29 @@ plain HTML/CSS/JS (`assets/index.html`, `assets/style.css`, `assets/app.js`,
 all embedded in the binary at build time) with no external network
 dependency and no build step.
 
+### Line numbers, stable references, and URL navigation
+
+Each open file panel shows 1-based line numbers down its left edge; they are
+excluded from text selection, so dragging across the code to copy it never
+picks up the line numbers themselves. Clicking a line number selects that
+single line; Shift-clicking extends the selection to a range from the last
+plain click.
+
+Every file panel's heading always shows its stable `@file:<path>` reference,
+and while a line range is selected the panel also shows the matching
+`@lines:<path>#L<start>-L<end>` reference (a single selected line omits the
+`-L<end>` part, e.g. `@lines:src/app.js#L42`). A directory's reference
+(shown when navigated to, see below) is `@dir:<path>`.
+
+These reference strings double as the page's URL fragment: `location.hash`
+holds one, percent-encoded, so the current directory or line selection can be
+bookmarked or shared as a link. Loading a URL with an `@dir:` fragment
+expands and scrolls the file tree to that directory; an `@file:`/`@lines:`
+fragment scrolls to and briefly highlights the matching already-open file
+panel (applying the line selection first, for `@lines:`). Opening a file
+automatically from a fragment is out of scope: if the file isn't open yet,
+an `@file:`/`@lines:` fragment is a no-op.
+
 ## API
 
 `GET /{token}/api/root` returns the selected root's `basename` and resolved

@@ -14,6 +14,10 @@ const RECENT_LIMIT = 100;
 const MIN_EXPLORER_WIDTH = 220;
 const MAX_EXPLORER_WIDTH = 800;
 
+// How long a navigation-target highlight (from a URL fragment jump) stays
+// visible before fading back to the normal, unhighlighted look.
+const NAV_FLASH_MS = 1500;
+
 const SOURCE_EXTENSIONS = new Set([
   "rs",
   "ts",
@@ -44,6 +48,12 @@ const state = {
   openFiles: [],
   fileContentCache: new Map(),
   collapsedPanels: new Set(),
+  // path -> { anchor, start, end }. `anchor` is the line a plain click last
+  // landed on (Shift-click ranges are measured from it); `start`/`end` are
+  // the currently highlighted range (start === end for a single-line
+  // selection). Tracked per path so selections in different open files never
+  // cross-contaminate each other's "last clicked line".
+  lineSelections: new Map(),
 };
 
 let el = {};
@@ -53,8 +63,14 @@ async function init() {
   wireSearchInput();
   wireRecentClear();
   wireResizer();
+  wireHashNavigation();
   renderRecentList();
   await Promise.all([loadRoot(), loadTree()]);
+  // Handle a reference already present in the URL when the page loads (e.g.
+  // a bookmarked "@dir:" link). Files are never open yet at this point, so
+  // an "@file:"/"@lines:" fragment is necessarily a no-op here; it only
+  // takes effect once matched against files opened later in the session.
+  handleHashNavigation();
 }
 
 function apiUrl(suffix) {
@@ -342,6 +358,115 @@ export function isDocFile(path) {
   return false;
 }
 
+// ---- Stable references (format/parse) ----
+//
+// Reference syntax (issue #5): "@file:<path>", "@dir:<path>", and
+// "@lines:<path>#L<start>" or "@lines:<path>#L<start>-L<end>" (the same
+// "#L42-L57" convention GitHub's own blob view uses). This is the one
+// canonical string form shared by the UI display, the URL fragment, and (in
+// a later issue) copied text, so format/parse are plain, DOM-free functions
+// that can be reused from all three places.
+
+const LINES_RANGE_PATTERN = /^L(\d+)(?:-L(\d+))?$/;
+
+export function formatFileRef(path) {
+  return `@file:${path}`;
+}
+
+export function formatDirRef(path) {
+  return `@dir:${path}`;
+}
+
+/** Formats a "@lines:<path>#L<start>" or "@lines:<path>#L<start>-L<end>"
+ * reference, normalizing `start`/`end` to `min`/`max` regardless of call
+ * order (mirroring `parseRef`'s leniency about swapped numbers) and
+ * clamping both to a minimum of 1. The clamp keeps this function's output
+ * always parseable by `parseRef` -- which rejects any line number below 1
+ * -- even if a caller passes 0 or a negative number in by mistake, since
+ * callers (e.g. a future copy-to-clipboard feature) shouldn't have to
+ * separately validate line numbers before formatting them. */
+export function formatLinesRef(path, start, end) {
+  const rangeEnd = end ?? start;
+  const lo = Math.max(1, Math.min(start, rangeEnd));
+  const hi = Math.max(1, Math.max(start, rangeEnd));
+  return lo === hi ? `@lines:${path}#L${lo}` : `@lines:${path}#L${lo}-L${hi}`;
+}
+
+/** Parses one reference string into `{ kind: "file", path }`,
+ * `{ kind: "dir", path }`, or `{ kind: "lines", path, start, end }`, or
+ * returns `null` if `refString` isn't a well-formed reference of any known
+ * kind (unrecognized prefix, empty path, malformed/out-of-range line
+ * numbers). The inverse of `formatFileRef`/`formatDirRef`/`formatLinesRef`
+ * for well-formed input, but deliberately lenient about which of the two
+ * line numbers came first: "@lines:p#L57-L42" is accepted and normalized to
+ * start=42/end=57, since a hand-edited URL fragment shouldn't silently fail
+ * to navigate just because the two numbers were swapped.
+ *
+ * A path that itself contains "#" (e.g. "notes#1.md") still round-trips:
+ * the *last* "#" in the string is treated as the start of the line-range
+ * suffix, not the first, since the range suffix is always what
+ * `formatLinesRef` appended most recently. This isn't a fully general
+ * solution -- a path containing the literal substring "#L5" right before
+ * its real range suffix could still be misread -- but it correctly handles
+ * every practical case of a "#" occurring earlier in the path. */
+export function parseRef(refString) {
+  if (typeof refString !== "string") return null;
+
+  if (refString.startsWith("@file:")) {
+    const path = refString.slice("@file:".length);
+    return path === "" ? null : { kind: "file", path };
+  }
+
+  if (refString.startsWith("@dir:")) {
+    const path = refString.slice("@dir:".length);
+    return path === "" ? null : { kind: "dir", path };
+  }
+
+  if (refString.startsWith("@lines:")) {
+    const rest = refString.slice("@lines:".length);
+    const hashIndex = rest.lastIndexOf("#");
+    if (hashIndex === -1) return null;
+
+    const path = rest.slice(0, hashIndex);
+    const rangePart = rest.slice(hashIndex + 1);
+    if (path === "") return null;
+
+    const match = LINES_RANGE_PATTERN.exec(rangePart);
+    if (!match) return null;
+
+    const first = Number.parseInt(match[1], 10);
+    const second = match[2] !== undefined ? Number.parseInt(match[2], 10) : first;
+    if (first < 1 || second < 1) return null;
+
+    return { kind: "lines", path, start: Math.min(first, second), end: Math.max(first, second) };
+  }
+
+  return null;
+}
+
+/** URL-fragment encoding for a reference string: `encodeURIComponent` the
+ * whole thing so path characters, "@", "#", and non-ASCII text all survive
+ * being placed after the page's own "#" in `location.hash`. */
+export function hashFragmentFromRef(refString) {
+  return encodeURIComponent(refString);
+}
+
+/** Inverse of `hashFragmentFromRef`, tolerant of malformed percent-encoding
+ * (returns `null` instead of throwing) since `fragment` may come straight
+ * from `location.hash`, which a user can edit by hand or navigate to via a
+ * stale/foreign link. `fragment` must already have its leading "#" stripped
+ * (i.e. pass `location.hash.slice(1)`, not `location.hash` itself). */
+export function refFromHashFragment(fragment) {
+  if (!fragment) return null;
+  let decoded;
+  try {
+    decoded = decodeURIComponent(fragment);
+  } catch (err) {
+    return null;
+  }
+  return parseRef(decoded);
+}
+
 // ---- Search filter ----
 
 function wireSearchInput() {
@@ -458,6 +583,7 @@ function closeFile(path) {
   state.openFiles = state.openFiles.filter((p) => p !== path);
   state.fileContentCache.delete(path);
   state.collapsedPanels.delete(path);
+  state.lineSelections.delete(path);
   renderFilePanels();
 }
 
@@ -496,10 +622,24 @@ function buildFilePanel(path) {
   });
   header.appendChild(toggle);
 
+  const titleWrap = document.createElement("div");
+  titleWrap.className = "file-panel-title-wrap";
+
   const heading = document.createElement("h2");
   heading.className = "file-panel-title";
   heading.textContent = path;
-  header.appendChild(heading);
+  titleWrap.appendChild(heading);
+
+  const fileRef = document.createElement("span");
+  fileRef.className = "file-panel-ref";
+  fileRef.textContent = formatFileRef(path);
+  titleWrap.appendChild(fileRef);
+
+  header.appendChild(titleWrap);
+
+  const linesRef = document.createElement("span");
+  linesRef.className = "file-panel-lines-ref";
+  header.appendChild(linesRef);
 
   article.appendChild(header);
 
@@ -507,14 +647,247 @@ function buildFilePanel(path) {
     const pre = document.createElement("pre");
     pre.className = "file-panel-body";
     const code = document.createElement("code");
-    code.textContent = state.fileContentCache.has(path)
-      ? state.fileContentCache.get(path)
-      : "Loading…";
+    code.className = "file-panel-code";
+
+    if (!state.fileContentCache.has(path)) {
+      code.textContent = "Loading…";
+    } else {
+      buildCodeLines(code, path, state.fileContentCache.get(path));
+    }
+
     pre.appendChild(code);
     article.appendChild(pre);
   }
 
+  updateLineSelectionDom(path, article);
+
   return article;
+}
+
+/** Splits `content` into `.code-line` rows, each holding a `user-select:
+ * none` line-number cell (so dragging across code to copy it never picks up
+ * the numbers) and the line's own text in a separate cell. A trailing empty
+ * element from a final "\n" is dropped so the displayed line count matches
+ * what an editor would show, not an off-by-one over-count. */
+function buildCodeLines(code, path, content) {
+  const lines = content.split("\n");
+  if (lines.length > 1 && lines[lines.length - 1] === "") {
+    lines.pop();
+  }
+
+  code.style.setProperty("--line-number-width", `${String(lines.length).length}ch`);
+
+  lines.forEach((lineText, index) => {
+    const lineNumber = index + 1;
+
+    const lineRow = document.createElement("span");
+    lineRow.className = "code-line";
+    lineRow.dataset.lineNumber = String(lineNumber);
+
+    const numberCell = document.createElement("span");
+    numberCell.className = "line-number";
+    numberCell.textContent = String(lineNumber);
+    numberCell.addEventListener("click", (event) => {
+      handleLineClick(path, lineNumber, event.shiftKey);
+    });
+    lineRow.appendChild(numberCell);
+
+    const contentCell = document.createElement("span");
+    contentCell.className = "line-content";
+    contentCell.textContent = lineText;
+    lineRow.appendChild(contentCell);
+
+    code.appendChild(lineRow);
+  });
+}
+
+/** Finds the open file panel `<article>` for `path`, or `null` if that file
+ * isn't currently open. Iterates `el.filePanels`'s direct children instead
+ * of a `querySelector` attribute match, since a `path` can contain
+ * characters (quotes, etc.) that would need escaping in a CSS selector. */
+function findFilePanelElement(path) {
+  for (const child of el.filePanels.children) {
+    if (child.dataset.path === path) return child;
+  }
+  return null;
+}
+
+// ---- Line click / Shift-click range selection ----
+
+/** Computes the next line-selection state for a file, given the current
+ * selection (or undefined if none yet), the clicked line, and whether Shift
+ * was held. A plain click always starts a fresh single-line selection at
+ * that line (this also covers Shift-click with no prior anchor: there is
+ * nothing to extend from, so it falls back to a single-line selection).
+ * Shift-click extends from the existing anchor to the clicked line,
+ * regardless of click order (always normalized to min/max). */
+export function nextLineSelection(current, lineNumber, shiftKey) {
+  if (shiftKey && current) {
+    return { anchor: current.anchor, start: Math.min(current.anchor, lineNumber), end: Math.max(current.anchor, lineNumber) };
+  }
+  return { anchor: lineNumber, start: lineNumber, end: lineNumber };
+}
+
+function handleLineClick(path, lineNumber, shiftKey) {
+  const current = state.lineSelections.get(path);
+  const next = nextLineSelection(current, lineNumber, shiftKey);
+  setLineSelection(path, next.anchor, next.start, next.end);
+}
+
+/** Records the selection for `path` (`anchor` is the plain-click line that
+ * Shift-click ranges are measured from; the highlighted range is always
+ * `min`/`max` of the two endpoints regardless of click order), reflects it
+ * in that file panel's DOM, and -- unless `writeHash` is `false` (used when
+ * a selection is being applied *from* an incoming hash, to avoid rewriting
+ * the same navigation back onto itself) -- updates the URL to match.
+ *
+ * Uses `history.replaceState` (via `writeRefToHash`) rather than assigning
+ * `window.location.hash` directly: a plain hash assignment fires a
+ * `hashchange` event, which would re-enter `handleHashNavigation` ->
+ * `revealFilePanel` for every single line click, forcing an unwanted
+ * `scrollIntoView` + `flashHighlight` on every click (a self-triggered
+ * navigation loop). `replaceState` updates
+ * `location.hash`/the address bar without firing `hashchange`, so an
+ * internal click never re-triggers its own navigation handler. It also
+ * doesn't push a new history entry, which is desirable here anyway --
+ * clicking through lines shouldn't pile up "back" entries -- while an
+ * incoming hash from a bookmark/typed URL, or the browser's own back/
+ * forward navigation, still fires `hashchange` normally and is handled by
+ * `wireHashNavigation` as before. */
+function setLineSelection(path, anchor, endpointA, endpointB, writeHash = true) {
+  const start = Math.min(endpointA, endpointB);
+  const end = Math.max(endpointA, endpointB);
+  state.lineSelections.set(path, { anchor, start, end });
+  updateLineSelectionDom(path);
+
+  if (writeHash) {
+    writeRefToHash(formatLinesRef(path, start, end));
+  }
+}
+
+/** Writes `refString` to the URL as a percent-encoded fragment via
+ * `window.history.replaceState`, without pushing a new history entry and
+ * without firing `hashchange` (see `setLineSelection`'s doc comment for why
+ * that matters). Pulled out into its own exported function so this one
+ * `window`-touching statement can be unit-tested in isolation -- by
+ * stubbing `window.history.replaceState` -- without needing the DOM that
+ * the rest of `setLineSelection` (via `updateLineSelectionDom`) depends on. */
+export function writeRefToHash(refString) {
+  window.history.replaceState(null, "", "#" + hashFragmentFromRef(refString));
+}
+
+/** Applies the current `state.lineSelections` entry for `path` (if any) to
+ * that file's already-rendered panel: toggles `.line-selected` on the
+ * matching `.code-line` rows and updates the panel's `@lines:...` display.
+ * Takes an optional already-known `panel` element (used from `buildFilePanel`,
+ * where the panel isn't attached to `el.filePanels` yet) and otherwise looks
+ * it up via `findFilePanelElement`. A no-op if the panel can't be found
+ * (e.g. the file isn't open). */
+function updateLineSelectionDom(path, panel = findFilePanelElement(path)) {
+  if (!panel) return;
+
+  const selection = state.lineSelections.get(path);
+
+  panel.querySelectorAll(".code-line").forEach((row) => {
+    const lineNumber = Number(row.dataset.lineNumber);
+    const selected = Boolean(selection && lineNumber >= selection.start && lineNumber <= selection.end);
+    row.classList.toggle("line-selected", selected);
+  });
+
+  const linesRefEl = panel.querySelector(".file-panel-lines-ref");
+  if (!linesRefEl) return;
+  linesRefEl.textContent = selection ? formatLinesRef(path, selection.start, selection.end) : "";
+  linesRefEl.style.display = selection ? "" : "none";
+}
+
+// ---- URL fragment navigation ----
+
+function wireHashNavigation() {
+  window.addEventListener("hashchange", handleHashNavigation);
+}
+
+function handleHashNavigation() {
+  const fragment = window.location.hash.slice(1);
+  if (!fragment) return;
+
+  const ref = refFromHashFragment(fragment);
+  if (!ref) return;
+
+  if (ref.kind === "dir") {
+    revealDirNode(ref.path);
+  } else if (ref.kind === "file") {
+    revealFilePanel(ref.path, null);
+  } else if (ref.kind === "lines") {
+    revealFilePanel(ref.path, ref);
+  }
+}
+
+/** Scrolls to and highlights the open file panel for `path`, applying
+ * `range`'s line selection first if given. A no-op if `path` isn't currently
+ * open in the right pane -- auto-opening a file from a URL fragment is out
+ * of scope for this issue. Expands a collapsed panel first, since otherwise
+ * there would be no code rows to highlight or scroll to. */
+function revealFilePanel(path, range) {
+  if (!state.openFiles.includes(path)) return;
+
+  if (state.collapsedPanels.has(path)) {
+    state.collapsedPanels.delete(path);
+    renderFilePanels();
+  }
+
+  if (range) {
+    // `writeHash: false` here: this selection is being *applied from* the
+    // hash we just navigated to, so writing it back would be a redundant
+    // no-op at best and a feedback loop at worst.
+    setLineSelection(path, range.end, range.start, range.end, false);
+  }
+
+  const panel = findFilePanelElement(path);
+  if (!panel) return;
+  panel.scrollIntoView({ behavior: "smooth", block: "start" });
+  flashHighlight(panel);
+}
+
+/** Finds the tree `<li class="tree-node">` for `path`, or `null` if no such
+ * node exists in the currently loaded tree. Same rationale as
+ * `findFilePanelElement` for iterating instead of using a CSS attribute
+ * selector. */
+function findTreeNodeElement(path) {
+  for (const li of el.treeRoot.querySelectorAll(".tree-node")) {
+    if (li.dataset.path === path) return li;
+  }
+  return null;
+}
+
+/** Expands every ancestor directory of `path` (not `path` itself) so an
+ * "@dir:" reference's target is guaranteed visible in the rendered tree,
+ * then scrolls to and highlights it. A no-op if `path` isn't a node in the
+ * currently loaded tree at all, or if it names a file rather than a
+ * directory (an "@dir:" reference to a file path is out of contract, not a
+ * fallback for revealing that file's tree row). */
+function revealDirNode(path) {
+  if (!state.nodesByPath.get(path)?.isDir) return;
+
+  const segments = path.split("/");
+  for (let i = 1; i < segments.length; i++) {
+    state.expandedDirs.add(segments.slice(0, i).join("/"));
+  }
+  renderTree();
+
+  const node = findTreeNodeElement(path);
+  if (!node) return;
+  node.scrollIntoView({ behavior: "smooth", block: "center" });
+  flashHighlight(node);
+}
+
+/** Adds a transient `.nav-flash` highlight class to `element`, removing it
+ * again after `NAV_FLASH_MS`, so a URL-fragment jump has a visible "you are
+ * here" cue that fades rather than a highlight that lingers forever. */
+function flashHighlight(element) {
+  element.classList.add("nav-flash");
+  window.setTimeout(() => {
+    element.classList.remove("nav-flash");
+  }, NAV_FLASH_MS);
 }
 
 // ---- Recently opened files (localStorage) ----
