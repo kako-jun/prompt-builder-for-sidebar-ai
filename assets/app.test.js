@@ -12,8 +12,12 @@ import {
   clamp,
   nextRecentList,
   nextOpenFilesList,
+  formatFileRef,
+  formatDirRef,
   formatLinesRef,
   parseRef,
+  hashFragmentFromRef,
+  refFromHashFragment,
   nextLineSelection,
 } from "./app.js";
 
@@ -427,6 +431,182 @@ describe("nextOpenFilesList", () => {
   });
 });
 
+// ---- formatFileRef / formatDirRef ----
+
+describe("formatFileRef / formatDirRef", () => {
+  test("formatFileRef returns '@file:<path>' for a normal path", () => {
+    assert.equal(formatFileRef("src/app.js"), "@file:src/app.js");
+  });
+
+  test("formatDirRef returns '@dir:<path>' for a normal path", () => {
+    assert.equal(formatDirRef("src"), "@dir:src");
+  });
+
+  test("a path that itself starts with '@' does not collide with the prefix", () => {
+    assert.equal(formatFileRef("@types/foo.ts"), "@file:@types/foo.ts");
+    assert.equal(formatDirRef("@types"), "@dir:@types");
+  });
+});
+
+// ---- formatLinesRef ----
+
+describe("formatLinesRef", () => {
+  test("start === end produces the single-line '#L<n>' form", () => {
+    assert.equal(formatLinesRef("a.js", 5, 5), "@lines:a.js#L5");
+  });
+
+  test("start < end produces the '#L<start>-L<end>' form", () => {
+    assert.equal(formatLinesRef("a.js", 5, 10), "@lines:a.js#L5-L10");
+  });
+
+  test("start > end is normalized to '#L<min>-L<max>' in the output", () => {
+    assert.equal(formatLinesRef("a.js", 10, 5), "@lines:a.js#L5-L10");
+  });
+
+  test("omitting end formats a single line equal to start", () => {
+    assert.equal(formatLinesRef("a.js", 5), "@lines:a.js#L5");
+  });
+
+  test("passing end explicitly equal to start matches the output of omitting end", () => {
+    assert.equal(formatLinesRef("a.js", 5, 5), formatLinesRef("a.js", 5));
+  });
+});
+
+// ---- parseRef: normal cases ----
+
+describe("parseRef - normal cases", () => {
+  test("parses '@file:<path>'", () => {
+    assert.deepEqual(parseRef("@file:src/app.js"), { kind: "file", path: "src/app.js" });
+  });
+
+  test("parses '@dir:<path>'", () => {
+    assert.deepEqual(parseRef("@dir:src"), { kind: "dir", path: "src" });
+  });
+
+  test("parses '@lines:<path>#L<n>' as a single-line range", () => {
+    assert.deepEqual(parseRef("@lines:src/app.js#L5"), {
+      kind: "lines",
+      path: "src/app.js",
+      start: 5,
+      end: 5,
+    });
+  });
+
+  test("parses '@lines:<path>#L<a>-L<b>' with a < b", () => {
+    assert.deepEqual(parseRef("@lines:src/app.js#L5-L10"), {
+      kind: "lines",
+      path: "src/app.js",
+      start: 5,
+      end: 10,
+    });
+  });
+});
+
+// ---- parseRef: boundary values and reversed ranges ----
+
+describe("parseRef - boundary values and reversed ranges", () => {
+  test("'#L0' is rejected as out of range (boundary - 1)", () => {
+    assert.equal(parseRef("@lines:a.js#L0"), null);
+  });
+
+  test("'#L1' is accepted (boundary)", () => {
+    assert.deepEqual(parseRef("@lines:a.js#L1"), { kind: "lines", path: "a.js", start: 1, end: 1 });
+  });
+
+  test("'#L2' is accepted (boundary + 1)", () => {
+    assert.deepEqual(parseRef("@lines:a.js#L2"), { kind: "lines", path: "a.js", start: 2, end: 2 });
+  });
+
+  test("'#L1-L0' is rejected because the end of the range is 0", () => {
+    assert.equal(parseRef("@lines:a.js#L1-L0"), null);
+  });
+
+  test("'#L0-L5' is rejected because the start of the range is 0", () => {
+    assert.equal(parseRef("@lines:a.js#L0-L5"), null);
+  });
+
+  test("a reversed range '#L57-L42' is normalized to start=42/end=57", () => {
+    assert.deepEqual(parseRef("@lines:a.js#L57-L42"), {
+      kind: "lines",
+      path: "a.js",
+      start: 42,
+      end: 57,
+    });
+  });
+});
+
+// ---- parseRef: abnormal input ----
+
+describe("parseRef - abnormal input", () => {
+  test("an empty string is rejected", () => {
+    assert.equal(parseRef(""), null);
+  });
+
+  test("a bare '@' with nothing after it is rejected", () => {
+    assert.equal(parseRef("@"), null);
+  });
+
+  test("an unrelated string with no ref syntax at all is rejected", () => {
+    assert.equal(parseRef("hello world"), null);
+  });
+
+  test("an unknown prefix is rejected", () => {
+    assert.equal(parseRef("@foo:bar"), null);
+  });
+
+  test("'@file:' with an empty path is rejected", () => {
+    assert.equal(parseRef("@file:"), null);
+  });
+
+  test("'@dir:' with an empty path is rejected", () => {
+    assert.equal(parseRef("@dir:"), null);
+  });
+
+  test("'@lines:' with nothing after it is rejected", () => {
+    assert.equal(parseRef("@lines:"), null);
+  });
+
+  test("'@lines:<path>' with no '#' at all is rejected", () => {
+    assert.equal(parseRef("@lines:src/app.js"), null);
+  });
+
+  test("'@lines:#L5' with an empty path is rejected", () => {
+    assert.equal(parseRef("@lines:#L5"), null);
+  });
+
+  test("'@lines:<path>#L' with no digits after 'L' is rejected", () => {
+    assert.equal(parseRef("@lines:src/app.js#L"), null);
+  });
+
+  test("'@lines:<path>#5' missing the 'L' prefix is rejected", () => {
+    assert.equal(parseRef("@lines:src/app.js#5"), null);
+  });
+
+  test("'@lines:<path>#l5' with a lowercase 'l' is rejected", () => {
+    assert.equal(parseRef("@lines:src/app.js#l5"), null);
+  });
+
+  test("'@lines:<path>#L5-L3-L2' with an extra range segment is rejected", () => {
+    assert.equal(parseRef("@lines:src/app.js#L5-L3-L2"), null);
+  });
+
+  test("null does not throw and returns null", () => {
+    assert.equal(parseRef(null), null);
+  });
+
+  test("undefined does not throw and returns null", () => {
+    assert.equal(parseRef(undefined), null);
+  });
+
+  test("a number does not throw and returns null", () => {
+    assert.equal(parseRef(42), null);
+  });
+
+  test("a plain object does not throw and returns null", () => {
+    assert.equal(parseRef({}), null);
+  });
+});
+
 // ---- parseRef: paths containing '#' (lastIndexOf fix) ----
 
 describe("parseRef - paths containing '#'", () => {
@@ -438,6 +618,67 @@ describe("parseRef - paths containing '#'", () => {
     // occurring earlier in the path.
     const ref = formatLinesRef("notes#1.md", 5, 5);
     assert.deepEqual(parseRef(ref), { kind: "lines", path: "notes#1.md", start: 5, end: 5 });
+  });
+});
+
+// ---- hashFragmentFromRef / refFromHashFragment: round trip ----
+
+describe("hashFragmentFromRef / refFromHashFragment - round trip", () => {
+  test("round-trips an ASCII path", () => {
+    const ref = formatFileRef("src/app.js");
+    assert.deepEqual(refFromHashFragment(hashFragmentFromRef(ref)), parseRef(ref));
+  });
+
+  test("round-trips a Japanese file name", () => {
+    const ref = formatFileRef("資料/計画.md");
+    assert.deepEqual(refFromHashFragment(hashFragmentFromRef(ref)), parseRef(ref));
+  });
+
+  test("round-trips a path containing spaces", () => {
+    const ref = formatFileRef("my folder/a b.txt");
+    assert.deepEqual(refFromHashFragment(hashFragmentFromRef(ref)), parseRef(ref));
+  });
+
+  test("round-trips a path containing emoji", () => {
+    const ref = formatFileRef("📁docs/📄note.md");
+    assert.deepEqual(refFromHashFragment(hashFragmentFromRef(ref)), parseRef(ref));
+  });
+
+  test("round-trips a path starting with '@' without the '@' being mangled by double encode/decode", () => {
+    const ref = formatFileRef("@types/foo.ts");
+    assert.deepEqual(refFromHashFragment(hashFragmentFromRef(ref)), parseRef(ref));
+  });
+});
+
+// ---- refFromHashFragment: abnormal input ----
+
+describe("refFromHashFragment - abnormal input", () => {
+  test("an empty string is rejected", () => {
+    assert.equal(refFromHashFragment(""), null);
+  });
+
+  test("null is rejected", () => {
+    assert.equal(refFromHashFragment(null), null);
+  });
+
+  test("undefined is rejected", () => {
+    assert.equal(refFromHashFragment(undefined), null);
+  });
+
+  test("a lone '%' (malformed percent-encoding) does not throw and returns null", () => {
+    assert.equal(refFromHashFragment("%"), null);
+  });
+
+  test("'%zz' (invalid hex digits) does not throw and returns null", () => {
+    assert.equal(refFromHashFragment("%zz"), null);
+  });
+
+  test("an incomplete UTF-8 byte sequence ('%E0%A4') does not throw and returns null", () => {
+    assert.equal(refFromHashFragment("%E0%A4"), null);
+  });
+
+  test("a fragment that decodes cleanly but isn't a known ref format returns null", () => {
+    assert.equal(refFromHashFragment(encodeURIComponent("hello world")), null);
   });
 });
 
