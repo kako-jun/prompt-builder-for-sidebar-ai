@@ -706,14 +706,24 @@ function findFilePanelElement(path) {
 
 // ---- Line click / Shift-click range selection ----
 
+/** Computes the next line-selection state for a file, given the current
+ * selection (or undefined if none yet), the clicked line, and whether Shift
+ * was held. A plain click always starts a fresh single-line selection at
+ * that line (this also covers Shift-click with no prior anchor: there is
+ * nothing to extend from, so it falls back to a single-line selection).
+ * Shift-click extends from the existing anchor to the clicked line,
+ * regardless of click order (always normalized to min/max). */
+export function nextLineSelection(current, lineNumber, shiftKey) {
+  if (shiftKey && current) {
+    return { anchor: current.anchor, start: Math.min(current.anchor, lineNumber), end: Math.max(current.anchor, lineNumber) };
+  }
+  return { anchor: lineNumber, start: lineNumber, end: lineNumber };
+}
+
 function handleLineClick(path, lineNumber, shiftKey) {
   const current = state.lineSelections.get(path);
-
-  if (shiftKey && current) {
-    setLineSelection(path, current.anchor, current.anchor, lineNumber);
-  } else {
-    setLineSelection(path, lineNumber, lineNumber, lineNumber);
-  }
+  const next = nextLineSelection(current, lineNumber, shiftKey);
+  setLineSelection(path, next.anchor, next.start, next.end);
 }
 
 /** Records the selection for `path` (`anchor` is the plain-click line that

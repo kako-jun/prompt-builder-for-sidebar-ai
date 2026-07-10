@@ -14,6 +14,7 @@ import {
   nextOpenFilesList,
   formatLinesRef,
   parseRef,
+  nextLineSelection,
 } from "./app.js";
 
 // ---- extensionOf ----
@@ -437,5 +438,43 @@ describe("parseRef - paths containing '#'", () => {
     // occurring earlier in the path.
     const ref = formatLinesRef("notes#1.md", 5, 5);
     assert.deepEqual(parseRef(ref), { kind: "lines", path: "notes#1.md", start: 5, end: 5 });
+  });
+});
+
+// ---- nextLineSelection ----
+
+describe("nextLineSelection", () => {
+  test("a plain click with no prior selection starts a single-line selection", () => {
+    assert.deepEqual(nextLineSelection(undefined, 5, false), { anchor: 5, start: 5, end: 5 });
+  });
+
+  test("a Shift-click with no prior selection falls back to a single-line selection (no anchor to extend from)", () => {
+    assert.deepEqual(nextLineSelection(undefined, 5, true), { anchor: 5, start: 5, end: 5 });
+  });
+
+  test("a plain click with an existing selection resets to a new single-line selection at the clicked line", () => {
+    const current = { anchor: 3, start: 3, end: 3 };
+    assert.deepEqual(nextLineSelection(current, 7, false), { anchor: 7, start: 7, end: 7 });
+  });
+
+  test("Shift-click below the anchor extends the range downward", () => {
+    const current = { anchor: 5, start: 5, end: 5 };
+    assert.deepEqual(nextLineSelection(current, 10, true), { anchor: 5, start: 5, end: 10 });
+  });
+
+  test("Shift-click above the anchor extends the range upward (min/max normalization)", () => {
+    const current = { anchor: 5, start: 5, end: 10 };
+    assert.deepEqual(nextLineSelection(current, 2, true), { anchor: 5, start: 2, end: 5 });
+  });
+
+  test("repeated Shift-clicks are always measured from the original anchor, not the previous start/end", () => {
+    const first = nextLineSelection({ anchor: 5, start: 5, end: 5 }, 10, true);
+    assert.deepEqual(first, { anchor: 5, start: 5, end: 10 });
+
+    // If this were (incorrectly) measured from `first`'s start/end instead
+    // of its anchor, extending to line 2 from a current range of 5-10 could
+    // be mistaken for extending from 10. It must still anchor on 5.
+    const second = nextLineSelection(first, 2, true);
+    assert.deepEqual(second, { anchor: 5, start: 2, end: 5 });
   });
 });
