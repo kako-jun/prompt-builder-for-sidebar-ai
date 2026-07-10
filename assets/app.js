@@ -342,6 +342,104 @@ export function isDocFile(path) {
   return false;
 }
 
+// ---- Stable references (format/parse) ----
+//
+// Reference syntax (issue #5): "@file:<path>", "@dir:<path>", and
+// "@lines:<path>#L<start>" or "@lines:<path>#L<start>-L<end>" (the same
+// "#L42-L57" convention GitHub's own blob view uses). This is the one
+// canonical string form shared by the UI display, the URL fragment, and (in
+// a later issue) copied text, so format/parse are plain, DOM-free functions
+// that can be reused from all three places.
+
+const LINES_RANGE_PATTERN = /^L(\d+)(?:-L(\d+))?$/;
+
+export function formatFileRef(path) {
+  return `@file:${path}`;
+}
+
+export function formatDirRef(path) {
+  return `@dir:${path}`;
+}
+
+export function formatLinesRef(path, start, end) {
+  const rangeEnd = end ?? start;
+  const lo = Math.min(start, rangeEnd);
+  const hi = Math.max(start, rangeEnd);
+  return lo === hi ? `@lines:${path}#L${lo}` : `@lines:${path}#L${lo}-L${hi}`;
+}
+
+/** Parses one reference string into `{ kind: "file", path }`,
+ * `{ kind: "dir", path }`, or `{ kind: "lines", path, start, end }`, or
+ * returns `null` if `refString` isn't a well-formed reference of any known
+ * kind (unrecognized prefix, empty path, malformed/out-of-range line
+ * numbers). The inverse of `formatFileRef`/`formatDirRef`/`formatLinesRef`
+ * for well-formed input, but deliberately lenient about which of the two
+ * line numbers came first: "@lines:p#L57-L42" is accepted and normalized to
+ * start=42/end=57, since a hand-edited URL fragment shouldn't silently fail
+ * to navigate just because the two numbers were swapped.
+ *
+ * Known, narrow limitation: a path that itself contains "#" cannot
+ * round-trip through an "@lines:" reference, because the first "#" found
+ * after the "@lines:" prefix is always treated as the start of the
+ * line-range suffix. Not handled here; left as a documented edge case. */
+export function parseRef(refString) {
+  if (typeof refString !== "string") return null;
+
+  if (refString.startsWith("@file:")) {
+    const path = refString.slice("@file:".length);
+    return path === "" ? null : { kind: "file", path };
+  }
+
+  if (refString.startsWith("@dir:")) {
+    const path = refString.slice("@dir:".length);
+    return path === "" ? null : { kind: "dir", path };
+  }
+
+  if (refString.startsWith("@lines:")) {
+    const rest = refString.slice("@lines:".length);
+    const hashIndex = rest.indexOf("#");
+    if (hashIndex === -1) return null;
+
+    const path = rest.slice(0, hashIndex);
+    const rangePart = rest.slice(hashIndex + 1);
+    if (path === "") return null;
+
+    const match = LINES_RANGE_PATTERN.exec(rangePart);
+    if (!match) return null;
+
+    const first = Number.parseInt(match[1], 10);
+    const second = match[2] !== undefined ? Number.parseInt(match[2], 10) : first;
+    if (first < 1 || second < 1) return null;
+
+    return { kind: "lines", path, start: Math.min(first, second), end: Math.max(first, second) };
+  }
+
+  return null;
+}
+
+/** URL-fragment encoding for a reference string: `encodeURIComponent` the
+ * whole thing so path characters, "@", "#", and non-ASCII text all survive
+ * being placed after the page's own "#" in `location.hash`. */
+export function hashFragmentFromRef(refString) {
+  return encodeURIComponent(refString);
+}
+
+/** Inverse of `hashFragmentFromRef`, tolerant of malformed percent-encoding
+ * (returns `null` instead of throwing) since `fragment` may come straight
+ * from `location.hash`, which a user can edit by hand or navigate to via a
+ * stale/foreign link. `fragment` must already have its leading "#" stripped
+ * (i.e. pass `location.hash.slice(1)`, not `location.hash` itself). */
+export function refFromHashFragment(fragment) {
+  if (!fragment) return null;
+  let decoded;
+  try {
+    decoded = decodeURIComponent(fragment);
+  } catch (err) {
+    return null;
+  }
+  return parseRef(decoded);
+}
+
 // ---- Search filter ----
 
 function wireSearchInput() {
