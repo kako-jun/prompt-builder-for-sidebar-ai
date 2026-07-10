@@ -1,9 +1,12 @@
 use prompt_builder_for_sidebar_ai::{build_router, generate_session_token};
+use std::fs;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::task::JoinHandle;
+use tokio::time::timeout;
 
 /// Sends a bare-bones HTTP/1.1 request over a raw TCP connection and
 /// returns the full response text (status line, headers, and body). Kept
@@ -40,6 +43,36 @@ fn body_of(response: &str) -> &str {
         .split_once("\r\n\r\n")
         .map(|(_, body)| body)
         .unwrap_or_default()
+}
+
+/// Extracts the response headers: everything before the blank line that
+/// terminates them, lower-cased so header-name/value checks are
+/// case-insensitive without repeating `.to_lowercase()` at every call site.
+fn headers_of(response: &str) -> String {
+    response
+        .split_once("\r\n\r\n")
+        .map(|(headers, _)| headers)
+        .unwrap_or_default()
+        .to_lowercase()
+}
+
+/// Minimal percent-encoder for building query strings by hand (no HTTP
+/// client / urlencoding crate dependency in this test scaffold). Encodes
+/// every byte outside the unreserved set (ASCII alphanumerics plus
+/// `-_.~`), which covers both non-ASCII UTF-8 bytes (for the non-ASCII
+/// filename round-trip test) and `.`/`/`  when the caller wants an
+/// explicitly `%2e%2e%2f`-style traversal string.
+fn percent_encode(input: &str) -> String {
+    let mut out = String::new();
+    for byte in input.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(byte as char);
+            }
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
 }
 
 /// Spins up a fresh session server on an OS-assigned loopback port for a
@@ -469,6 +502,561 @@ async fn api_tree_returns_empty_array_for_empty_root() {
         "[]",
         "expected an empty JSON array body for an empty root"
     );
+
+    server.abort();
+}
+
+// ---- /api/root ----
+
+#[tokio::test]
+async fn api_root_returns_200_and_json_content_type_for_valid_token() {
+    let (addr, token, server) = spawn_test_server().await;
+
+    let response = get(addr, &format!("/{token}/api/root")).await;
+    assert!(
+        response.starts_with("HTTP/1.1 200"),
+        "expected 200 for a valid token's api/root, got: {response}"
+    );
+    assert!(
+        headers_of(&response).contains("content-type: application/json"),
+        "expected a JSON content type header, got: {response}"
+    );
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn api_root_body_contains_basename_and_absolute_path_matching_scratch_root() {
+    let scratch = ScratchDir::new("root-info");
+    let (addr, token, server) = spawn_test_server_with_root(scratch.path().to_path_buf()).await;
+
+    let response = get(addr, &format!("/{token}/api/root")).await;
+    let body = body_of(&response);
+    let parsed: serde_json::Value = serde_json::from_str(body)
+        .unwrap_or_else(|err| panic!("body should be valid JSON: {err}, body: {body}"));
+
+    let expected_basename = scratch
+        .path()
+        .file_name()
+        .expect("scratch dir should have a basename")
+        .to_string_lossy()
+        .into_owned();
+
+    assert_eq!(
+        parsed["basename"].as_str(),
+        Some(expected_basename.as_str())
+    );
+    assert_eq!(
+        parsed["absolutePath"].as_str(),
+        Some(scratch.path().display().to_string().as_str())
+    );
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn api_root_falls_back_to_absolute_path_when_basename_is_none_for_bare_slash_root() {
+    // `Path::new("/").file_name()` returns `None` (the filesystem root has no
+    // basename component), which exercises `serve_root`'s
+    // `unwrap_or_else(|| root.display().to_string())` fallback. Deliberately
+    // hits only `/api/root`, not `/api/tree`: walking the real filesystem
+    // root would be slow and would touch files outside this test's control.
+    let (addr, token, server) = spawn_test_server_with_root(PathBuf::from("/")).await;
+
+    let response = get(addr, &format!("/{token}/api/root")).await;
+    let body = body_of(&response);
+    let parsed: serde_json::Value = serde_json::from_str(body)
+        .unwrap_or_else(|err| panic!("body should be valid JSON: {err}, body: {body}"));
+
+    assert_eq!(parsed["basename"].as_str(), Some("/"));
+    assert_eq!(parsed["absolutePath"].as_str(), Some("/"));
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn api_root_returns_404_for_wrong_token() {
+    let (addr, _token, server) = spawn_test_server().await;
+
+    let response = get(addr, "/not-the-session-token/api/root").await;
+    assert!(
+        response.starts_with("HTTP/1.1 404"),
+        "expected 404 for api/root with the wrong token, got: {response}"
+    );
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn api_root_returns_405_for_post() {
+    let (addr, token, server) = spawn_test_server().await;
+
+    let response = request(addr, "POST", &format!("/{token}/api/root")).await;
+    assert!(
+        response.starts_with("HTTP/1.1 405"),
+        "expected 405 for a POST to api/root, got: {response}"
+    );
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn api_root_returns_404_for_extra_path_segment() {
+    let (addr, token, server) = spawn_test_server().await;
+
+    let response = get(addr, &format!("/{token}/api/root/extra")).await;
+    assert!(
+        response.starts_with("HTTP/1.1 404"),
+        "expected 404 for api/root with an extra path segment, got: {response}"
+    );
+
+    server.abort();
+}
+
+// ---- /api/file ----
+
+#[tokio::test]
+async fn api_file_returns_400_for_missing_path_query() {
+    let (addr, token, server) = spawn_test_server().await;
+
+    let response = get(addr, &format!("/{token}/api/file")).await;
+    assert!(
+        response.starts_with("HTTP/1.1 400"),
+        "expected 400 when the 'path' query parameter is missing entirely, got: {response}"
+    );
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn api_file_returns_400_for_empty_path_query() {
+    let (addr, token, server) = spawn_test_server().await;
+
+    let response = get(addr, &format!("/{token}/api/file?path=")).await;
+    assert!(
+        response.starts_with("HTTP/1.1 400"),
+        "expected 400 for an empty 'path' query value, got: {response}"
+    );
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn api_file_returns_200_and_text_plain_for_existing_file_with_exact_body() {
+    let scratch = ScratchDir::new("file-ok");
+    fs::write(scratch.path().join("hello.txt"), "hello world\n").unwrap();
+    let (addr, token, server) = spawn_test_server_with_root(scratch.path().to_path_buf()).await;
+
+    let response = get(addr, &format!("/{token}/api/file?path=hello.txt")).await;
+    assert!(
+        response.starts_with("HTTP/1.1 200"),
+        "expected 200 for an existing text file, got: {response}"
+    );
+    assert!(
+        headers_of(&response).contains("content-type: text/plain; charset=utf-8"),
+        "expected a text/plain content type header, got: {response}"
+    );
+    assert_eq!(body_of(&response), "hello world\n");
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn api_file_returns_404_for_nonexistent_relative_path() {
+    let scratch = ScratchDir::new("file-missing");
+    let (addr, token, server) = spawn_test_server_with_root(scratch.path().to_path_buf()).await;
+
+    let response = get(addr, &format!("/{token}/api/file?path=does-not-exist.txt")).await;
+    assert!(
+        response.starts_with("HTTP/1.1 404"),
+        "expected 404 for a nonexistent relative path, got: {response}"
+    );
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn api_file_returns_404_for_a_directory_path() {
+    let scratch = ScratchDir::new("file-is-dir");
+    fs::create_dir(scratch.path().join("subdir")).unwrap();
+    let (addr, token, server) = spawn_test_server_with_root(scratch.path().to_path_buf()).await;
+
+    let response = get(addr, &format!("/{token}/api/file?path=subdir")).await;
+    assert!(
+        response.starts_with("HTTP/1.1 404"),
+        "expected 404 when the requested path is a directory, got: {response}"
+    );
+
+    server.abort();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn api_file_does_not_hang_and_returns_404_for_a_fifo() {
+    // Most important regression guard in this file: `serve_file` must check
+    // `is_regular_file` (metadata) *before* it ever calls
+    // `is_probably_binary` (which opens the file). If that ordering ever
+    // regresses, opening a FIFO with no writer on the other end blocks
+    // forever, hanging the request. Wrap the request in `tokio::time::timeout`
+    // so a regression fails this test instead of hanging the whole suite.
+    let scratch = ScratchDir::new("file-fifo");
+    let root = scratch.path().to_path_buf();
+
+    let fifo_path = root.join("a.fifo");
+    let status = std::process::Command::new("mkfifo")
+        .arg(&fifo_path)
+        .status()
+        .expect("the `mkfifo` command should be available on this system");
+    assert!(status.success(), "mkfifo should succeed");
+
+    let (addr, token, server) = spawn_test_server_with_root(root).await;
+
+    let response = timeout(
+        Duration::from_secs(5),
+        get(addr, &format!("/{token}/api/file?path=a.fifo")),
+    )
+    .await
+    .expect("a request for a FIFO path should not hang");
+
+    assert!(
+        response.starts_with("HTTP/1.1 404"),
+        "expected 404 for a FIFO path, got: {response}"
+    );
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn api_file_returns_403_for_dotdot_traversal_to_an_existing_outside_file() {
+    let root_scratch = ScratchDir::new("traversal-root");
+    let outside_scratch = ScratchDir::new("traversal-outside");
+    fs::write(outside_scratch.path().join("secret.txt"), "outside content").unwrap();
+    let outside_name = outside_scratch
+        .path()
+        .file_name()
+        .expect("outside scratch dir should have a basename")
+        .to_string_lossy()
+        .into_owned();
+
+    let (addr, token, server) =
+        spawn_test_server_with_root(root_scratch.path().to_path_buf()).await;
+
+    let response = get(
+        addr,
+        &format!("/{token}/api/file?path=../{outside_name}/secret.txt"),
+    )
+    .await;
+    assert!(
+        response.starts_with("HTTP/1.1 403"),
+        "expected 403 for '../' traversal to an existing outside file, got: {response}"
+    );
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn api_file_returns_404_for_dotdot_traversal_to_a_nonexistent_outside_path() {
+    // Known asymmetry (discovery #1, paired with the test above): whether a
+    // '../' traversal outside the root returns 403 or 404 depends on whether
+    // something happens to exist at the resolved location, which makes
+    // `/api/file` usable as an existence oracle for paths outside the root.
+    // Fixed here as characterization, not remediation; a review decision is
+    // needed on whether both cases should collapse to the same status.
+    let root_scratch = ScratchDir::new("traversal-root-missing");
+    let (addr, token, server) =
+        spawn_test_server_with_root(root_scratch.path().to_path_buf()).await;
+
+    let response = get(
+        addr,
+        &format!("/{token}/api/file?path=../this-should-not-exist-anywhere-abc123/secret.txt"),
+    )
+    .await;
+    assert!(
+        response.starts_with("HTTP/1.1 404"),
+        "expected 404 for '../' traversal to a nonexistent outside path, got: {response}"
+    );
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn api_file_returns_403_for_an_absolute_path_query_pointing_at_an_existing_outside_file() {
+    let root_scratch = ScratchDir::new("absolute-traversal-root");
+    let outside_scratch = ScratchDir::new("absolute-traversal-outside");
+    fs::write(outside_scratch.path().join("secret.txt"), "outside content").unwrap();
+    let absolute_outside_path = outside_scratch
+        .path()
+        .join("secret.txt")
+        .display()
+        .to_string();
+
+    let (addr, token, server) =
+        spawn_test_server_with_root(root_scratch.path().to_path_buf()).await;
+
+    let response = get(
+        addr,
+        &format!("/{token}/api/file?path={absolute_outside_path}"),
+    )
+    .await;
+    assert!(
+        response.starts_with("HTTP/1.1 403"),
+        "expected 403 for an absolute path query pointing outside the root, got: {response}"
+    );
+
+    server.abort();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn api_file_returns_403_for_a_symlink_inside_root_pointing_outside_root() {
+    let root_scratch = ScratchDir::new("symlink-out-root");
+    let outside_scratch = ScratchDir::new("symlink-out-outside");
+    fs::write(outside_scratch.path().join("secret.txt"), "outside content").unwrap();
+    std::os::unix::fs::symlink(
+        outside_scratch.path().join("secret.txt"),
+        root_scratch.path().join("escape.txt"),
+    )
+    .unwrap();
+
+    let (addr, token, server) =
+        spawn_test_server_with_root(root_scratch.path().to_path_buf()).await;
+
+    let response = get(addr, &format!("/{token}/api/file?path=escape.txt")).await;
+    assert!(
+        response.starts_with("HTTP/1.1 403"),
+        "expected 403 for a symlink inside root that points outside root, got: {response}"
+    );
+
+    server.abort();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn api_file_serves_content_through_a_symlink_that_stays_inside_root() {
+    // Known asymmetry (discovery #3): `discover_tree` (`/api/tree`) always
+    // excludes symlink entries outright, so a symlink that stays inside the
+    // root never appears in the tree listing. `serve_file` (`/api/file`) has
+    // no such exclusion: it only checks where the canonicalized path ends
+    // up, so a symlink that resolves inside the root is served normally.
+    // Fixed here as characterization, not remediation.
+    let scratch = ScratchDir::new("symlink-in-root");
+    fs::write(scratch.path().join("real.txt"), "real content").unwrap();
+    std::os::unix::fs::symlink(
+        scratch.path().join("real.txt"),
+        scratch.path().join("link.txt"),
+    )
+    .unwrap();
+
+    let (addr, token, server) = spawn_test_server_with_root(scratch.path().to_path_buf()).await;
+
+    let response = get(addr, &format!("/{token}/api/file?path=link.txt")).await;
+    assert!(
+        response.starts_with("HTTP/1.1 200"),
+        "expected 200 through a symlink that stays inside root, got: {response}"
+    );
+    assert_eq!(body_of(&response), "real content");
+
+    server.abort();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn api_file_returns_400_for_unreadable_file_permission_denied() {
+    use std::os::unix::fs::PermissionsExt;
+
+    // Known behavior (discovery #2): a permission-denied file is rejected
+    // with 400 "binary files are not supported", not 404, because
+    // `is_probably_binary`'s `File::open` fails, and the caller maps that
+    // `Err` to `unwrap_or(true)` (treat as binary) rather than distinguishing
+    // "unreadable" from "actually binary". Fixed here as characterization,
+    // not remediation.
+    let scratch = ScratchDir::new("file-permission-denied");
+    let blocked = scratch.path().join("blocked.txt");
+    fs::write(&blocked, "blocked content").unwrap();
+    fs::set_permissions(&blocked, fs::Permissions::from_mode(0o000)).unwrap();
+
+    // Some CI environments run as root (or otherwise don't enforce
+    // permission bits), in which case the chmod above has no real effect.
+    // Confirm the file is actually unreadable before asserting on it;
+    // otherwise skip rather than assert a false failure.
+    if fs::File::open(&blocked).is_ok() {
+        fs::set_permissions(&blocked, fs::Permissions::from_mode(0o644)).unwrap();
+        return;
+    }
+
+    let (addr, token, server) = spawn_test_server_with_root(scratch.path().to_path_buf()).await;
+
+    let response = get(addr, &format!("/{token}/api/file?path=blocked.txt")).await;
+
+    // Restore permissions so ScratchDir's Drop can remove the directory.
+    fs::set_permissions(&blocked, fs::Permissions::from_mode(0o644)).unwrap();
+
+    assert!(
+        response.starts_with("HTTP/1.1 400"),
+        "expected 400 (not 404) for a permission-denied file, got: {response}"
+    );
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn api_file_returns_400_for_a_binary_file() {
+    let scratch = ScratchDir::new("file-binary");
+    fs::write(scratch.path().join("binary.bin"), [0u8, 1, 2, 3]).unwrap();
+    let (addr, token, server) = spawn_test_server_with_root(scratch.path().to_path_buf()).await;
+
+    let response = get(addr, &format!("/{token}/api/file?path=binary.bin")).await;
+    assert!(
+        response.starts_with("HTTP/1.1 400"),
+        "expected 400 for a binary file, got: {response}"
+    );
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn api_file_returns_400_for_invalid_utf8_content() {
+    let scratch = ScratchDir::new("file-invalid-utf8");
+    // No NUL byte here (so the binary sniff heuristic does not reject it
+    // first): 0xFF is never a valid UTF-8 lead byte, so this trips the
+    // `String::from_utf8` check specifically.
+    fs::write(
+        scratch.path().join("invalid-utf8.txt"),
+        [0xFF, 0xFE, b'a', b'b'],
+    )
+    .unwrap();
+    let (addr, token, server) = spawn_test_server_with_root(scratch.path().to_path_buf()).await;
+
+    let response = get(addr, &format!("/{token}/api/file?path=invalid-utf8.txt")).await;
+    assert!(
+        response.starts_with("HTTP/1.1 400"),
+        "expected 400 for non-UTF-8 content that isn't NUL-flagged as binary, got: {response}"
+    );
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn api_file_returns_200_for_a_file_with_non_ascii_name() {
+    let scratch = ScratchDir::new("file-non-ascii-name");
+    fs::write(scratch.path().join("日本語.txt"), "japanese name content").unwrap();
+    let (addr, token, server) = spawn_test_server_with_root(scratch.path().to_path_buf()).await;
+
+    let encoded_path = percent_encode("日本語.txt");
+    let response = get(addr, &format!("/{token}/api/file?path={encoded_path}")).await;
+    assert!(
+        response.starts_with("HTTP/1.1 200"),
+        "expected 200 for a non-ASCII file name round-tripped through percent-encoding, got: {response}"
+    );
+    assert_eq!(body_of(&response), "japanese name content");
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn api_file_returns_403_for_percent_encoded_dotdot_traversal() {
+    let root_scratch = ScratchDir::new("percent-traversal-root");
+    let outside_scratch = ScratchDir::new("percent-traversal-outside");
+    fs::write(outside_scratch.path().join("secret.txt"), "outside content").unwrap();
+    let outside_name = outside_scratch
+        .path()
+        .file_name()
+        .expect("outside scratch dir should have a basename")
+        .to_string_lossy()
+        .into_owned();
+
+    let (addr, token, server) =
+        spawn_test_server_with_root(root_scratch.path().to_path_buf()).await;
+
+    // percent_encode escapes every non-unreserved byte, including '.' and
+    // '/', so this produces a "%2e%2e%2f"-style (upper-hex) traversal
+    // string that decodes back to "../<outside_name>/secret.txt" server-side.
+    let encoded_traversal = percent_encode(&format!("../{outside_name}/secret.txt"));
+    let response = get(addr, &format!("/{token}/api/file?path={encoded_traversal}")).await;
+    assert!(
+        response.starts_with("HTTP/1.1 403"),
+        "expected 403 for a percent-encoded '../' traversal to an existing outside file, got: {response}"
+    );
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn api_file_returns_404_for_wrong_token() {
+    let (addr, _token, server) = spawn_test_server().await;
+
+    let response = get(addr, "/not-the-session-token/api/file?path=anything.txt").await;
+    assert!(
+        response.starts_with("HTTP/1.1 404"),
+        "expected 404 for api/file with the wrong token, got: {response}"
+    );
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn api_file_returns_405_for_post() {
+    let (addr, token, server) = spawn_test_server().await;
+
+    let response = request(
+        addr,
+        "POST",
+        &format!("/{token}/api/file?path=anything.txt"),
+    )
+    .await;
+    assert!(
+        response.starts_with("HTTP/1.1 405"),
+        "expected 405 for a POST to api/file, got: {response}"
+    );
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn two_concurrent_requests_to_api_file_return_identical_bodies() {
+    let scratch = ScratchDir::new("file-concurrent");
+    fs::write(scratch.path().join("shared.txt"), "shared content").unwrap();
+    let (addr, token, server) = spawn_test_server_with_root(scratch.path().to_path_buf()).await;
+    let path = format!("/{token}/api/file?path=shared.txt");
+
+    let (first_response, second_response) = tokio::join!(get(addr, &path), get(addr, &path));
+
+    assert!(
+        first_response.starts_with("HTTP/1.1 200"),
+        "expected 200 for the first concurrent request, got: {first_response}"
+    );
+    assert!(
+        second_response.starts_with("HTTP/1.1 200"),
+        "expected 200 for the second concurrent request, got: {second_response}"
+    );
+    assert_eq!(
+        body_of(&first_response),
+        body_of(&second_response),
+        "concurrent requests to api/file should return identical bodies"
+    );
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn api_file_returns_200_for_a_multi_megabyte_text_file() {
+    // A few MB is enough to exercise the read path beyond a single buffer's
+    // worth of data without slowing down the suite; GB-scale files are out
+    // of scope for this test.
+    let scratch = ScratchDir::new("file-multi-megabyte");
+    let line = "the quick brown fox jumps over the lazy dog\n";
+    let repeats = (5 * 1024 * 1024) / line.len() + 1;
+    let content = line.repeat(repeats);
+    fs::write(scratch.path().join("large.txt"), &content).unwrap();
+    let (addr, token, server) = spawn_test_server_with_root(scratch.path().to_path_buf()).await;
+
+    let response = get(addr, &format!("/{token}/api/file?path=large.txt")).await;
+    assert!(
+        response.starts_with("HTTP/1.1 200"),
+        "expected 200 for a multi-megabyte text file, got status line: {}",
+        response.lines().next().unwrap_or_default()
+    );
+    assert_eq!(body_of(&response), content);
 
     server.abort();
 }
