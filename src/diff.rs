@@ -182,11 +182,12 @@ fn list_untracked_files(root: &Path) -> Vec<String> {
 ///
 /// Returns `None` -- silently omitting just that one file rather than
 /// failing the whole diff -- for anything this tool already refuses to serve
-/// as file content elsewhere: a path escaping `root` or passing through a
-/// symlink (via [`resolve_regular_file`], the same discipline `serve_file`
-/// uses for `/api/file`; Git itself never reports such a path here, but
-/// re-validating costs nothing and keeps this function correct even if that
-/// assumption ever stops holding), a non-regular file, a binary file (via
+/// as file content elsewhere: a path escaping `root`, passing through a
+/// symlink, or exceeding [`crate::discovery::MAX_SERVABLE_FILE_SIZE`] (all
+/// three via [`resolve_regular_file`], the same discipline and cap
+/// `serve_file` uses for `/api/file`; Git itself never reports such a path
+/// here, but re-validating costs nothing and keeps this function correct
+/// even if that assumption ever stops holding), a binary file (via
 /// [`is_probably_binary`], the same heuristic `/api/tree` and `/api/file`
 /// both already use -- checked before ever invoking `git`, so a binary
 /// file's content is never even offered to `git diff`, rather than relying
@@ -200,7 +201,7 @@ fn list_untracked_files(root: &Path) -> Vec<String> {
 /// decoded with [`String::from_utf8_lossy`] for the same reason
 /// [`run_git_diff_head`] does.
 fn synthesize_untracked_diff(root: &Path, path: &str) -> Option<String> {
-    let candidate = resolve_regular_file(root, path)?;
+    let candidate = resolve_regular_file(root, path).ok()?;
 
     if is_probably_binary(&candidate).unwrap_or(true) {
         return None;
@@ -419,6 +420,20 @@ mod tests {
 
         let result = compute_diff(repo.path());
         assert!(!result.diff.contains("binary.dat"));
+    }
+
+    #[test]
+    fn an_untracked_file_over_the_size_limit_is_omitted_rather_than_erroring() {
+        let repo = ScratchRepo::init("oversized");
+        repo.write("a.txt", "hello\n");
+        repo.commit_all("init");
+        let path = repo.path().join("huge.txt");
+        let file = std::fs::File::create(&path).expect("should create the file");
+        file.set_len(crate::discovery::MAX_SERVABLE_FILE_SIZE + 1)
+            .expect("should extend the file past the size limit");
+
+        let result = compute_diff(repo.path());
+        assert!(!result.diff.contains("huge.txt"));
     }
 
     #[cfg(unix)]

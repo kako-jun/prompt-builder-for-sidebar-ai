@@ -118,9 +118,21 @@ async fn serve_root(State(root): State<Arc<PathBuf>>) -> impl IntoResponse {
     })
 }
 
+/// Response body for `GET /{token}/api/tree`. `truncated` is `true` when
+/// [`discover_tree`] hit [`discovery::MAX_TREE_ENTRIES`] and stopped early
+/// (issue #9's resource-limit hardening) -- surfaced explicitly rather than
+/// letting a cut-off list look like a complete one, since the frontend (and
+/// any bulk-selection/"copy everything" workflow built on top of it) would
+/// otherwise have no way to know files are missing.
+#[derive(Serialize)]
+struct TreeResponse {
+    entries: Vec<FileEntry>,
+    truncated: bool,
+}
+
 async fn serve_tree(State(root): State<Arc<PathBuf>>) -> impl IntoResponse {
-    let entries: Vec<FileEntry> = discover_tree(&root);
-    Json(entries)
+    let (entries, truncated) = discover_tree(&root);
+    Json(TreeResponse { entries, truncated })
 }
 
 /// Query parameters for `GET /{token}/api/file`.
@@ -176,11 +188,15 @@ struct FileQuery {
 /// to distinguish "outside the root and exists" from "outside the root and
 /// doesn't exist" (this endpoint never returns 403; there is no longer a
 /// response that would tell a caller "something is there, you're just not
-/// allowed to see it"). A directory path also returns 404. A binary file
-/// returns 400. A file that exists, is a regular file, and passed every
-/// check above but still can't be read (e.g. a permission error) returns 500,
-/// distinct from the binary-file 400 so callers aren't told a permission
-/// error is a binary-format problem. File bytes that are not valid UTF-8 are
+/// allowed to see it"). A directory path also returns 404. A file larger
+/// than [`discovery::MAX_SERVABLE_FILE_SIZE`] returns 400 (issue #9's
+/// resource-limit hardening: an unbounded read of an arbitrarily large file
+/// would otherwise be able to exhaust memory/time on a single request). A
+/// binary file returns 400. A file that exists, is a regular file, passed
+/// the size check, and passed every check above but still can't be read
+/// (e.g. a permission error) returns 500, distinct from the binary-file/
+/// too-large 400s so callers aren't told a permission error is a
+/// binary-format or size problem. File bytes that are not valid UTF-8 are
 /// rejected with 400 rather than lossily replacing the invalid bytes, so
 /// callers can tell the difference between "this is text" and "this looked
 /// like text to the NUL-sniff heuristic but isn't valid UTF-8".
@@ -206,14 +222,20 @@ async fn serve_file(State(root): State<Arc<PathBuf>>, Query(query): Query<FileQu
     };
 
     // Validated one `Normal` path component at a time -- rejecting anything
-    // that would escape the root or pass through a symlink -- by
-    // `discovery::resolve_regular_file`. See the function doc comment above
-    // for why this replaces the previous "join, canonicalize, then
-    // `starts_with`" approach; see `resolve_regular_file`'s own doc comment
-    // for the exact rules (also shared by the Git-diff module's
+    // that would escape the root, pass through a symlink, or exceed the
+    // size cap -- by `discovery::resolve_regular_file`. See the function doc
+    // comment above for why this replaces the previous "join, canonicalize,
+    // then `starts_with`" approach; see `resolve_regular_file`'s own doc
+    // comment for the exact rules (also shared by the Git-diff module's
     // untracked-file handling, so both places enforce the identical policy).
-    let Some(candidate) = discovery::resolve_regular_file(&canonical_root, requested_path) else {
-        return (StatusCode::NOT_FOUND, "file not found").into_response();
+    let candidate = match discovery::resolve_regular_file(&canonical_root, requested_path) {
+        Ok(candidate) => candidate,
+        Err(discovery::ResolveError::Invalid) => {
+            return (StatusCode::NOT_FOUND, "file not found").into_response()
+        }
+        Err(discovery::ResolveError::TooLarge) => {
+            return (StatusCode::BAD_REQUEST, "file is too large to serve").into_response()
+        }
     };
 
     match is_probably_binary(&candidate) {

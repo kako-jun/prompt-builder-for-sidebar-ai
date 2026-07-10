@@ -19,11 +19,17 @@
   box-sizing: border-box;
 }
 
-html,
+html {
+  height: 100%;
+}
+
 body {
+  display: flex;
+  flex-direction: column;
   margin: 0;
   padding: 0;
-  height: 100%;
+  height: 100vh;
+  min-width: 720px;
   background: var(--bg);
   color: var(--text);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -44,11 +50,25 @@ button {
   white-space: nowrap;
 }
 
+/* Issue #9: a persistent (not dismissible -- see the HTML comment near its
+   markup) disclosure that copied content may reach a third-party AI and can
+   carry prompt-injection text. Kept slim so it doesn't meaningfully compete
+   with the explorer/content panes for space. */
+.security-notice {
+  flex-shrink: 0;
+  padding: 0.4rem 0.9rem;
+  background: rgba(224, 169, 64, 0.12);
+  border-bottom: 1px solid var(--warning);
+  color: var(--warning);
+  font-size: 0.78rem;
+  line-height: 1.4;
+}
+
 .app {
   display: flex;
-  height: 100vh;
+  flex: 1;
+  min-height: 0;
   width: 100%;
-  min-width: 720px;
 }
 
 /* ---- Explorer (left) pane ---- */
@@ -223,6 +243,16 @@ button {
 }
 
 /* ---- Tree ---- */
+
+/* Shown (via app.js toggling `hidden`) when `/api/tree` reports the tree was
+   cut off at the resource-exhaustion cap (issue #9), so an incomplete file
+   list never silently looks like a complete one. */
+.tree-truncation-warning {
+  margin: 0 0 0.5rem;
+  color: var(--warning);
+  font-size: 0.75rem;
+  line-height: 1.4;
+}
 
 .tree {
   flex: 1;

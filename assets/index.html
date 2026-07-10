@@ -9,6 +9,18 @@
     </style>
   </head>
   <body>
+    <!--
+      Deliberately no dismiss/close control here (issue #9): this is a
+      security disclosure, not a dismissible tip, so it stays visible on
+      every load rather than being something a user mutes once and then
+      never sees again. See THREAT_MODEL.md for the full rationale.
+    -->
+    <div id="security-notice" class="security-notice" role="note">
+      ⚠ Anything you copy from this page may be pasted into a third-party AI
+      assistant. File content can contain instructions written to manipulate
+      that AI ("prompt injection") -- review what you're about to share
+      before pasting it anywhere.
+    </div>
     <div id="app" class="app">
       <aside id="explorer-pane" class="explorer-pane">
         <div class="root-info">
@@ -43,6 +55,10 @@
           <ul id="recent-list" class="recent-list"></ul>
         </section>
 
+        <p id="tree-truncation-warning" class="tree-truncation-warning" hidden>
+          ⚠ This project has more files than can be shown at once; the list
+          below is incomplete.
+        </p>
         <nav id="tree-root" class="tree" aria-label="File explorer"></nav>
       </aside>
 

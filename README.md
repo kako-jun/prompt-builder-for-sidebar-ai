@@ -2,6 +2,22 @@
 
 A local browser that builds prompts for sidebar AI from your files.
 
+> [!WARNING]
+> **Use at your own risk.** This tool serves files from a directory you
+> choose over a local (loopback-only) web server, and helps you copy their
+> content into a prompt. It relies entirely on your own judgment about what
+> to select and where to paste it:
+> - Anything you select and copy can be pasted into a third-party AI product
+>   this tool has no relationship with or control over. Consider what you're
+>   about to share before you share it -- secrets, credentials, and private
+>   data included.
+> - File content is untrusted input from this tool's perspective. A file can
+>   contain text written to manipulate whatever AI later reads the copied
+>   prompt ("prompt injection"). This tool cannot detect or prevent that.
+>
+> See [THREAT_MODEL.md](THREAT_MODEL.md) for the detailed threat model,
+> mitigations, and what's explicitly out of scope.
+
 ## Usage
 
 ```console
@@ -29,7 +45,9 @@ opened list; a right pane that renders every checked file's content as its
 own collapsible panel. It defaults to a dark theme and is implemented as
 plain HTML/CSS/JS (`assets/index.html`, `assets/style.css`, `assets/app.js`,
 all embedded in the binary at build time) with no external network
-dependency and no build step.
+dependency and no build step. A persistent notice at the top of the page
+restates this README's disclaimer: content copied from here may be pasted
+into a third-party AI, and file content can carry prompt-injection text.
 
 ### Line numbers, stable references, and URL navigation
 
@@ -163,10 +181,21 @@ order-of-magnitude sense of size, not a precise count.
 `absolutePath` as JSON, so the frontend can present the root as the
 explorer's top-level node without ever exposing a way to navigate above it.
 
-`GET /{token}/api/tree` returns a flat, path-sorted JSON list of every
-eligible file and directory under the selected root (see `src/discovery.rs`).
-Each entry has a `/`-separated `path` relative to the root, `is_dir`, and
-`likely_secret`.
+`GET /{token}/api/tree` returns `{ entries, truncated }` as JSON (see
+`src/discovery.rs`): `entries` is a flat, path-sorted list of every eligible
+file and directory under the selected root, each with a `/`-separated `path`
+relative to the root, `is_dir`, and `likely_secret`. The walk is capped at
+50,000 *visited* items (`discovery::MAX_TREE_ENTRIES`) as a
+resource-exhaustion backstop against a pathological tree -- counting every
+item the walk looks at, not just the ones that end up in `entries`, so a
+tree dominated by filtered-out items (an enormous number of symlinks, or
+binaries, since checking one means opening and reading it) can't blow
+through the cap for free. `truncated` is `true` when that cap was actually
+hit, so the response never silently looks complete when it isn't -- the
+explorer UI shows a warning above the file tree in that case. Which entries
+survive a truncation is deterministic (name-sorted per directory during the
+walk itself), not dependent on unspecified filesystem enumeration order.
+Ordinary projects never come close to the cap.
 
 `GET /{token}/api/file?path=<relative path>` returns one file's content as
 `text/plain; charset=utf-8`. This is the most security-sensitive endpoint in
@@ -178,11 +207,14 @@ filesystem is ever touched; each remaining component is then checked with
 traversal, an absolute-path query value, and a symlink anywhere in the path
 (whether it points outside the root or stays inside it) are all refused,
 matching the same "never follow a symlink" invariant `api/tree` already
-uses. A missing/empty `path` query returns 400. Escaping the root, passing
-through a symlink, not existing, or being a directory all return 404 --
-merged into a single status so this endpoint can never be used to tell
-whether something exists outside the selected root (it never returns 403).
-A binary file (by the same NUL-sniffing heuristic `api/tree` uses) returns
+uses (both endpoints call the same `discovery::resolve_regular_file`
+helper). A missing/empty `path` query returns 400. Escaping the root,
+passing through a symlink, not existing, or being a directory all return
+404 -- merged into a single status so this endpoint can never be used to
+tell whether something exists outside the selected root (it never returns
+403). A file larger than 10 MiB (`discovery::MAX_SERVABLE_FILE_SIZE`, the
+same resource-exhaustion backstop `api/tree`'s entry cap is) returns 400. A
+binary file (by the same NUL-sniffing heuristic `api/tree` uses) returns
 400; content that isn't valid UTF-8 also returns 400. A file that passes
 every check but still can't be read (e.g. a permission error) returns 500.
 

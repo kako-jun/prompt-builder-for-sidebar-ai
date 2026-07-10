@@ -102,10 +102,13 @@ async function loadTree() {
       el.treeRoot.textContent = `Failed to load the file tree (HTTP ${response.status}).`;
       return;
     }
-    const entries = await response.json();
-    state.entries = entries;
-    buildTree(entries);
+    const data = await response.json();
+    state.entries = data.entries;
+    buildTree(data.entries);
     renderTree();
+    // issue #9: `/api/tree` reports when the resource-exhaustion cap cut the
+    // walk short, so an incomplete list never silently looks complete.
+    el.treeTruncationWarning.hidden = !data.truncated;
   } catch (err) {
     el.treeRoot.textContent = "Failed to load the file tree.";
   }
@@ -2214,6 +2217,7 @@ if (typeof document !== "undefined") {
     rootBasename: document.getElementById("root-basename"),
     rootPath: document.getElementById("root-path"),
     treeRoot: document.getElementById("tree-root"),
+    treeTruncationWarning: document.getElementById("tree-truncation-warning"),
     searchInput: document.getElementById("search-input"),
     recentList: document.getElementById("recent-list"),
     recentClear: document.getElementById("recent-clear"),
