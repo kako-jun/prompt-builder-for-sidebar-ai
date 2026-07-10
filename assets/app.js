@@ -64,7 +64,9 @@ async function init() {
   wireRecentClear();
   wireResizer();
   wireHashNavigation();
+  wireCopyMenuDismissal();
   renderRecentList();
+  renderContentToolbar();
   await Promise.all([loadRoot(), loadTree()]);
   // Handle a reference already present in the URL when the page loads (e.g.
   // a bookmarked "@dir:" link). Files are never open yet at this point, so
@@ -263,6 +265,23 @@ function renderNode(node) {
   label.appendChild(nameSpan);
 
   row.appendChild(label);
+
+  if (node.isDir) {
+    const copyButton = document.createElement("button");
+    copyButton.type = "button";
+    copyButton.className = "tree-dir-copy";
+    copyButton.textContent = "⧉";
+    copyButton.title = "Copy all files in this directory (Markdown)";
+    copyButton.setAttribute(
+      "aria-label",
+      `Copy all files under ${node.path || "the project root"}`
+    );
+    copyButton.addEventListener("click", (event) => {
+      event.stopPropagation();
+      copyDirectoryContents(node, "markdown", copyButton);
+    });
+    row.appendChild(copyButton);
+  }
 
   if (!node.isDir && node.likelySecret) {
     const badge = document.createElement("span");
@@ -812,6 +831,7 @@ function closeFile(path) {
 }
 
 function renderFilePanels() {
+  renderContentToolbar();
   el.filePanels.innerHTML = "";
   el.contentEmptyHint.style.display = state.openFiles.length === 0 ? "" : "none";
 
@@ -1376,6 +1396,93 @@ function filePanelCopyMenuItems(path) {
   return items;
 }
 
+/** Copies every file under directory `node` (via its precomputed
+ * `fileDescendants`), formatted as `format`, reflecting the result on
+ * `button`. Used by the tree row's hover copy icon (always Markdown, the
+ * app-wide default). */
+async function copyDirectoryContents(node, format, button) {
+  try {
+    const entries = await fetchFileContents(node.fileDescendants);
+    const text = formatMultipleFiles(entries, format);
+    await copyToClipboardWithFeedback(text, button);
+  } catch (err) {
+    flashCopyFeedback(button, false, err && err.message ? err.message : String(err));
+  }
+}
+
+/** Copies every currently-checked file, formatted as `format`. A no-op while
+ * nothing is checked (the caller is also expected to disable the triggering
+ * control in that state; this is a defensive backstop). */
+async function copyAllChecked(format, button) {
+  if (state.checked.size === 0) return;
+  try {
+    const entries = await fetchFileContents(Array.from(state.checked));
+    const text = formatMultipleFiles(entries, format);
+    await copyToClipboardWithFeedback(text, button);
+  } catch (err) {
+    flashCopyFeedback(button, false, err && err.message ? err.message : String(err));
+  }
+}
+
+/** Copies the whole project's file tree (every file path currently known
+ * from `/api/tree`, not just checked ones -- a tree has no "selection"
+ * concept of its own). Always sorted by path first, satisfying
+ * `formatFileTree`'s "already sorted" precondition regardless of the order
+ * `/api/tree` happened to return entries in. */
+async function copyFileTree(button) {
+  try {
+    const paths = state.entries
+      .filter((entry) => !entry.is_dir)
+      .map((entry) => entry.path)
+      .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+    const text = formatFileTree(paths, "markdown");
+    await copyToClipboardWithFeedback(text, button);
+  } catch (err) {
+    flashCopyFeedback(button, false, err && err.message ? err.message : String(err));
+  }
+}
+
+/** Menu items for the global toolbar's "⋯" button: the three non-default
+ * output formats for a checked-files copy (disabled while nothing is
+ * checked), plus "Copy file tree" (never disabled; it doesn't depend on the
+ * checked set at all). */
+function globalCopyMenuItems() {
+  const hasChecked = state.checked.size > 0;
+
+  const items = ["plain", "xml", "diff"].map((format) => ({
+    label: `Copy all checked as ${formatLabel(format)}`,
+    disabled: !hasChecked,
+    onClick: (button) => copyAllChecked(format, button),
+  }));
+
+  items.push({
+    label: "Copy file tree",
+    onClick: (button) => copyFileTree(button),
+  });
+
+  return items;
+}
+
+/** Rebuilds the content pane's toolbar: the "N files open" count and the
+ * "Copy all checked" button cluster. Called every time the open-files list
+ * might have changed (from `renderFilePanels`) and once at startup (from
+ * `init`), since `state.openFiles`/`state.checked` are otherwise only
+ * updated as a side effect of tree/checkbox interactions this toolbar has no
+ * other hook into. */
+function renderContentToolbar() {
+  const count = state.openFiles.length;
+  el.contentToolbarCount.textContent = count === 1 ? "1 file open" : `${count} files open`;
+
+  el.contentToolbarActions.innerHTML = "";
+  const group = buildCopyActionGroup(
+    "Copy all checked",
+    (button) => copyAllChecked("markdown", button),
+    globalCopyMenuItems
+  );
+  group.querySelector(".copy-button-primary").disabled = state.checked.size === 0;
+  el.contentToolbarActions.appendChild(group);
+}
+
 // ---- Recently opened files (localStorage) ----
 
 function loadRecent() {
@@ -1537,6 +1644,8 @@ if (typeof document !== "undefined") {
     recentClear: document.getElementById("recent-clear"),
     filePanels: document.getElementById("file-panels"),
     contentEmptyHint: document.getElementById("content-empty-hint"),
+    contentToolbarCount: document.getElementById("content-toolbar-count"),
+    contentToolbarActions: document.getElementById("content-toolbar-actions"),
     explorerPane: document.getElementById("explorer-pane"),
     resizer: document.getElementById("resizer"),
   };

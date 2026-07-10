@@ -475,3 +475,152 @@ body.resizing {
 .code-line.line-selected .line-content {
   background: rgba(91, 157, 255, 0.18);
 }
+
+/* ---- Copy actions (issue #6) ---- */
+
+.copy-action-group {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  flex-shrink: 0;
+}
+
+.copy-button {
+  background: var(--bg-panel-alt);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 4px;
+  padding: 0.25rem 0.5rem;
+  font-size: 0.75rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.copy-button:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.copy-button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.copy-button.copy-success {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.copy-button.copy-failure {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.copy-menu-toggle {
+  background: var(--bg-panel-alt);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 4px;
+  padding: 0.25rem 0.4rem;
+  font-size: 0.75rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.copy-menu-toggle:hover {
+  border-color: var(--accent);
+}
+
+.copy-menu {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin-top: 0.25rem;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  min-width: 12rem;
+  background: var(--bg-panel-alt);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.25rem;
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.35);
+}
+
+.copy-menu-item {
+  background: none;
+  border: none;
+  color: var(--text);
+  text-align: left;
+  padding: 0.35rem 0.5rem;
+  font-size: 0.78rem;
+  border-radius: 3px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.copy-menu-item:hover:not(:disabled) {
+  background: rgba(91, 157, 255, 0.15);
+  color: var(--accent);
+}
+
+.copy-menu-item:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.file-panel-actions {
+  flex-shrink: 0;
+}
+
+/* Hidden until the containing tree row is hovered/focused, so the tree
+   doesn't sprout a copy icon next to every single directory all the time. */
+.tree-dir-copy {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  font-size: 0.75rem;
+  padding: 0 0.2rem;
+  flex-shrink: 0;
+  cursor: pointer;
+  opacity: 0;
+}
+
+.tree-row:hover .tree-dir-copy,
+.tree-dir-copy:focus-visible {
+  opacity: 1;
+}
+
+.tree-dir-copy:hover {
+  color: var(--accent);
+}
+
+.tree-dir-copy.copy-success,
+.tree-dir-copy.copy-failure {
+  opacity: 1;
+}
+
+.tree-dir-copy.copy-success {
+  color: var(--accent);
+}
+
+.tree-dir-copy.copy-failure {
+  color: var(--danger);
+}
+
+/* ---- Content toolbar (global copy actions) ---- */
+
+.content-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding-bottom: 0.75rem;
+  margin-bottom: 0.75rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.content-toolbar-count {
+  color: var(--text-dim);
+  font-size: 0.8rem;
+}
