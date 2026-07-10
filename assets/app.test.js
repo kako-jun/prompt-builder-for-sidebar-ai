@@ -20,6 +20,16 @@ import {
   refFromHashFragment,
   nextLineSelection,
   writeRefToHash,
+  languageForPath,
+  escapeXmlAttribute,
+  escapeXmlText,
+  markdownFenceFor,
+  formatSingleFile,
+  formatMultipleFiles,
+  formatFileTree,
+  formatReferenceWithCode,
+  copyTextToClipboard,
+  fetchFileContents,
 } from "./app.js";
 
 // ---- extensionOf ----
@@ -794,5 +804,548 @@ describe("writeRefToHash", () => {
       start: 3,
       end: 3,
     });
+  });
+});
+
+// ---- languageForPath ----
+
+describe("languageForPath", () => {
+  test("resolves a known extension to its Markdown language tag", () => {
+    assert.equal(languageForPath("src/app.rs"), "rust");
+  });
+
+  test("returns an empty string for an unknown extension", () => {
+    assert.equal(languageForPath("data.xyz"), "");
+  });
+
+  test("returns an empty string for a file with no extension", () => {
+    assert.equal(languageForPath("README"), "");
+  });
+
+  test("resolves an uppercase extension case-insensitively", () => {
+    assert.equal(languageForPath("FOO.RS"), "rust");
+  });
+});
+
+// ---- escapeXmlText / escapeXmlAttribute ----
+
+describe("escapeXmlText", () => {
+  test("escapes a lone '&' to '&amp;'", () => {
+    assert.equal(escapeXmlText("&"), "&amp;");
+  });
+
+  test("escapes a lone '<' to '&lt;'", () => {
+    assert.equal(escapeXmlText("<"), "&lt;");
+  });
+
+  test("escapes a lone '>' to '&gt;'", () => {
+    assert.equal(escapeXmlText(">"), "&gt;");
+  });
+
+  test("re-escapes an input that already looks like the entity '&amp;', producing '&amp;amp;' (double escaping is intended)", () => {
+    // The input here is raw file content, not a stream of already-encoded XML
+    // entities: there is no basis for assuming a literal "&amp;" appearing in
+    // some file's text was already meant as an entity, so re-escaping its "&"
+    // is the correct, intended behavior -- not a bug to fix.
+    assert.equal(escapeXmlText("&amp;"), "&amp;amp;");
+  });
+
+  test("passes non-ASCII text (Japanese, emoji) through unchanged", () => {
+    assert.equal(escapeXmlText("日本語😀"), "日本語😀");
+  });
+
+  test("returns an empty string for an empty string", () => {
+    assert.equal(escapeXmlText(""), "");
+  });
+});
+
+describe("escapeXmlAttribute", () => {
+  test("escapes a lone '\"' to '&quot;' (the one character escapeXmlText does not need to handle)", () => {
+    assert.equal(escapeXmlAttribute('"'), "&quot;");
+  });
+
+  test("escapes all four special characters in one string, in the correct order, without re-escaping its own generated entities", () => {
+    // "&" must be replaced first: escaping "<"/">"/"\"" all produce entities
+    // that start with "&", so escaping "&" afterward would double-escape
+    // them. This asserts the actual combined output, which only comes out
+    // correct if the replacements run in that order.
+    assert.equal(escapeXmlAttribute(`&<>"`), "&amp;&lt;&gt;&quot;");
+  });
+});
+
+// ---- markdownFenceFor ----
+
+describe("markdownFenceFor", () => {
+  test("content with no backticks at all uses the minimum 3-backtick fence", () => {
+    assert.equal(markdownFenceFor("plain content"), "```");
+  });
+
+  test("non-consecutive single backticks (longest run is still 1) keep the 3-backtick fence", () => {
+    // Confirms the function looks at the longest *consecutive* run, not just
+    // whether a backtick appears anywhere in the content.
+    assert.equal(markdownFenceFor("a ` b ` c"), "```");
+  });
+
+  test("a run of 3 consecutive backticks escalates the fence to 4 backticks", () => {
+    assert.equal(markdownFenceFor("before ``` after"), "````");
+  });
+
+  test("a run of 4 consecutive backticks escalates the fence to 5 backticks", () => {
+    assert.equal(markdownFenceFor("````"), "`````");
+  });
+
+  test("multiple runs of different lengths escalate based on the longest run, not the sum of all runs", () => {
+    // Two separate runs of length 2 and length 4. Summing them would
+    // (incorrectly) reach 6 and escalate to a 7-backtick fence; taking the
+    // max correctly escalates to only 5.
+    assert.equal(markdownFenceFor("`` middle ````"), "`````");
+  });
+});
+
+// ---- formatSingleFile ----
+
+describe("formatSingleFile", () => {
+  test("'plain' renders a path heading, a matching underline, and the content verbatim", () => {
+    assert.equal(
+      formatSingleFile("src/app.js", "console.log(1);", "plain"),
+      "src/app.js\n----------\nconsole.log(1);"
+    );
+  });
+
+  test("'markdown' opens the fence with the language tag for a known extension", () => {
+    assert.equal(
+      formatSingleFile("src/app.rs", "fn main() {}", "markdown"),
+      "### src/app.rs\n\n```rust\nfn main() {}\n```\n"
+    );
+  });
+
+  test("'markdown' opens the fence with no language tag for an unknown extension", () => {
+    assert.equal(formatSingleFile("data.xyz", "abc", "markdown"), "### data.xyz\n\n```\nabc\n```\n");
+  });
+
+  test("'markdown' with empty content still renders a well-formed (empty-body) fenced block", () => {
+    assert.equal(formatSingleFile("empty.txt", "", "markdown"), "### empty.txt\n\n```\n\n```\n");
+  });
+
+  test("'xml' escapes the path and the content independently, each in its own escaping rules", () => {
+    assert.equal(
+      formatSingleFile('weird"path.txt', "a < b", "xml"),
+      '<file path="weird&quot;path.txt">a &lt; b</file>'
+    );
+  });
+
+  test("'diff' is byte-identical to 'plain' (regression guard: issue #8 will feed real diff content through this slot, but for now it's just a placeholder for 'plain')", () => {
+    const path = "src/app.js";
+    const content = "console.log(1);";
+    assert.equal(formatSingleFile(path, content, "diff"), formatSingleFile(path, content, "plain"));
+  });
+
+  test("an unrecognized format string falls back to 'plain'", () => {
+    const path = "src/app.js";
+    const content = "console.log(1);";
+    assert.equal(formatSingleFile(path, content, "bogus"), formatSingleFile(path, content, "plain"));
+  });
+
+  test("format === undefined falls back to 'plain'", () => {
+    const path = "src/app.js";
+    const content = "console.log(1);";
+    assert.equal(formatSingleFile(path, content, undefined), formatSingleFile(path, content, "plain"));
+  });
+
+  test("format === null or a number both fall back to 'plain'", () => {
+    const path = "src/app.js";
+    const content = "console.log(1);";
+    assert.equal(formatSingleFile(path, content, null), formatSingleFile(path, content, "plain"));
+    assert.equal(formatSingleFile(path, content, 42), formatSingleFile(path, content, "plain"));
+  });
+
+  test("boundary: an empty path still gets the minimum 3-dash underline", () => {
+    assert.equal(formatSingleFile("", "x", "plain"), "\n---\nx");
+  });
+
+  test("boundary: a 3-character path gets an underline of exactly 3 dashes", () => {
+    assert.equal(formatSingleFile("abc", "x", "plain"), "abc\n---\nx");
+  });
+
+  test("boundary + 1: a 4-character path gets an underline of exactly 4 dashes", () => {
+    assert.equal(formatSingleFile("abcd", "x", "plain"), "abcd\n----\nx");
+  });
+});
+
+// ---- formatMultipleFiles ----
+
+describe("formatMultipleFiles", () => {
+  const entries = [
+    { path: "b.txt", content: "B content" },
+    { path: "a.txt", content: "A content" },
+  ];
+
+  test("'plain' joins each file's plain block, sorted by path ascending, separated by a blank line", () => {
+    assert.equal(
+      formatMultipleFiles(entries, "plain"),
+      "a.txt\n-----\nA content\n\nb.txt\n-----\nB content"
+    );
+  });
+
+  test("'markdown' joins each file's markdown block, sorted by path ascending, with a single-newline joiner", () => {
+    assert.equal(
+      formatMultipleFiles(entries, "markdown"),
+      "### a.txt\n\n```\nA content\n```\n\n### b.txt\n\n```\nB content\n```\n"
+    );
+  });
+
+  test("'xml' wraps every sorted <file> element inside a single <files> element", () => {
+    assert.equal(
+      formatMultipleFiles(entries, "xml"),
+      '<files>\n<file path="a.txt">A content</file>\n<file path="b.txt">B content</file>\n</files>'
+    );
+  });
+
+  test("'diff' joins entries the same way 'plain' does", () => {
+    assert.equal(formatMultipleFiles(entries, "diff"), formatMultipleFiles(entries, "plain"));
+  });
+
+  test("an empty entries array produces an empty string for 'plain' and 'markdown'", () => {
+    assert.equal(formatMultipleFiles([], "plain"), "");
+    assert.equal(formatMultipleFiles([], "markdown"), "");
+  });
+
+  test("an empty entries array still produces a well-formed empty <files> element for 'xml'", () => {
+    assert.equal(formatMultipleFiles([], "xml"), "<files>\n\n</files>");
+  });
+
+  test("a single-element entries array is still wrapped by exactly one <files> element in 'xml'", () => {
+    const single = [{ path: "only.txt", content: "content" }];
+    assert.equal(
+      formatMultipleFiles(single, "xml"),
+      '<files>\n<file path="only.txt">content</file>\n</files>'
+    );
+  });
+
+  test("output is deterministic: reordering the input entries produces byte-identical output (always sorted by path)", () => {
+    const forward = formatMultipleFiles(entries, "markdown");
+    const reversed = formatMultipleFiles([...entries].reverse(), "markdown");
+    assert.equal(forward, reversed);
+  });
+
+  test("duplicate paths are not deduplicated: both entries survive, in their original relative order", () => {
+    // formatMultipleFiles only ever sorts by `path`, and Array.prototype.sort
+    // is stable, so two entries sharing the same path keep their original
+    // relative order rather than being merged or having one silently
+    // dropped. This is the documented, intended behavior -- callers in this
+    // app never actually produce duplicate paths, so there's no dedupe logic
+    // to fall back on if they did.
+    const duplicatePathEntries = [
+      { path: "dup.txt", content: "first" },
+      { path: "dup.txt", content: "second" },
+    ];
+    assert.equal(
+      formatMultipleFiles(duplicatePathEntries, "plain"),
+      "dup.txt\n-------\nfirst\n\ndup.txt\n-------\nsecond"
+    );
+  });
+
+  test("i18n: multiple entries with Japanese file names concatenate without corruption", () => {
+    const jaEntries = [
+      { path: "資料/計画.md", content: "計画の内容" },
+      { path: "資料/メモ.txt", content: "メモの内容" },
+    ];
+    assert.equal(
+      formatMultipleFiles(jaEntries, "plain"),
+      "資料/メモ.txt\n---------\nメモの内容\n\n資料/計画.md\n--------\n計画の内容"
+    );
+  });
+});
+
+// ---- formatFileTree ----
+
+describe("formatFileTree", () => {
+  test("'plain' lists flat files one per line, alphabetically", () => {
+    assert.equal(formatFileTree(["file2.txt", "file1.txt"], "plain"), "file1.txt\nfile2.txt");
+  });
+
+  test("indentation grows proportionally with nesting depth (3+ levels deep)", () => {
+    assert.equal(formatFileTree(["a/b/c/deep.txt"], "plain"), "a/\n  b/\n    c/\n      deep.txt");
+  });
+
+  test("the same file name at different directory levels renders as two separate branches, not one shared node", () => {
+    assert.equal(formatFileTree(["src/util.rs", "lib/util.rs"], "plain"), "lib/\n  util.rs\nsrc/\n  util.rs");
+  });
+
+  test("an empty paths array produces an empty string for 'plain'", () => {
+    assert.equal(formatFileTree([], "plain"), "");
+  });
+
+  test("an empty paths array still produces a well-formed empty <tree> element for 'xml'", () => {
+    assert.equal(formatFileTree([], "xml"), "<tree>\n\n</tree>");
+  });
+
+  test("'xml' is a flat list of <file> elements even for nested paths -- directories are never nested as XML elements", () => {
+    assert.equal(
+      formatFileTree(["a/b/c.txt", "d.txt"], "xml"),
+      '<tree>\n<file path="a/b/c.txt"/>\n<file path="d.txt"/>\n</tree>'
+    );
+  });
+
+  test("'markdown' wraps the whole listing in a single fenced code block", () => {
+    assert.equal(formatFileTree(["a.txt", "b.txt"], "markdown"), "```\na.txt\nb.txt\n```");
+  });
+
+  test("'diff' is identical to 'plain' (a tree listing has no diff-specific shape)", () => {
+    const paths = ["a/b.txt", "c.txt"];
+    assert.equal(formatFileTree(paths, "diff"), formatFileTree(paths, "plain"));
+  });
+
+  test("an unrecognized format falls back to the same output as 'plain'", () => {
+    const paths = ["a/b.txt", "c.txt"];
+    assert.equal(formatFileTree(paths, "bogus"), formatFileTree(paths, "plain"));
+  });
+
+  test("current-behavior fixation: a path that is both a leaf ('a/b') and, via another entry ('a/b/c'), a directory -- pins down what the function actually does today", () => {
+    // `/api/tree` never produces this contradiction in practice (a real
+    // filesystem entry is either a file or a directory, never both, so this
+    // input is unreachable in production). `buildPathTree` has no explicit
+    // handling for it: "b" ends up with a child ("c"), so it is rendered
+    // purely as a directory -- the "a/b" leaf's own existence is silently
+    // absorbed rather than appearing as its own line. This test only records
+    // that current behavior so a future refactor doesn't change it silently;
+    // it isn't a bug being fixed here.
+    assert.equal(formatFileTree(["a/b", "a/b/c"], "plain"), "a/\n  b/\n    c");
+  });
+});
+
+// ---- formatReferenceWithCode ----
+
+describe("formatReferenceWithCode", () => {
+  test("'markdown' opens the fence with the language tag inferred from an '@file:' ref's embedded path", () => {
+    const ref = formatFileRef("src/app.rs");
+    assert.equal(
+      formatReferenceWithCode(ref, "fn main() {}", "markdown"),
+      `### ${ref}\n\n\`\`\`rust\nfn main() {}\n\`\`\`\n`
+    );
+  });
+
+  test("'markdown' falls back to no language tag when the ref string doesn't parse (parseRef returns null)", () => {
+    const ref = "not-a-real-ref";
+    assert.equal(
+      formatReferenceWithCode(ref, "some code", "markdown"),
+      `### ${ref}\n\n\`\`\`\nsome code\n\`\`\`\n`
+    );
+  });
+
+  test("'xml' escapes the ref as an XML attribute and the content as XML text, each independently", () => {
+    const ref = formatFileRef('weird"path.rs');
+    assert.equal(
+      formatReferenceWithCode(ref, "a < b", "xml"),
+      '<file ref="@file:weird&quot;path.rs">a &lt; b</file>'
+    );
+  });
+
+  test("'diff' and 'plain' both render the exact same '<ref>\\n<content>' shape", () => {
+    const ref = formatFileRef("src/app.js");
+    const content = "console.log(1);";
+    const expected = `${ref}\n${content}`;
+    assert.equal(formatReferenceWithCode(ref, content, "diff"), expected);
+    assert.equal(formatReferenceWithCode(ref, content, "plain"), expected);
+  });
+
+  test("an unrecognized format falls back to the same 'plain'-shaped output", () => {
+    const ref = formatFileRef("src/app.js");
+    const content = "console.log(1);";
+    assert.equal(
+      formatReferenceWithCode(ref, content, "bogus"),
+      formatReferenceWithCode(ref, content, "plain")
+    );
+  });
+
+  test("an '@lines:' ref with multi-line content renders correctly in 'markdown'", () => {
+    const ref = formatLinesRef("src/app.js", 3, 5);
+    const content = "line3\nline4\nline5";
+    assert.equal(
+      formatReferenceWithCode(ref, content, "markdown"),
+      `### ${ref}\n\n\`\`\`javascript\n${content}\n\`\`\`\n`
+    );
+  });
+});
+
+// ---- copyTextToClipboard ----
+//
+// `navigator` is a built-in, getter-only global in this Node version (no
+// setter), so it can't be reassigned with a plain `navigator = ...`; it must
+// be replaced with `Object.defineProperty` and restored the same way
+// afterward -- the same "capture original, stub, restore in `finally`"
+// pattern `writeRefToHash`'s tests use for `window`, just via
+// `defineProperty` instead of a plain assignment since `navigator`'s
+// descriptor has no setter to assign through.
+
+describe("copyTextToClipboard", () => {
+  async function withNavigator(value, run) {
+    const original = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+    Object.defineProperty(globalThis, "navigator", { value, configurable: true, writable: true });
+    try {
+      return await run();
+    } finally {
+      Object.defineProperty(globalThis, "navigator", original);
+    }
+  }
+
+  test("returns {ok:false} with a string error when `navigator` itself is undefined", async () => {
+    await withNavigator(undefined, async () => {
+      const result = await copyTextToClipboard("hello");
+      assert.equal(result.ok, false);
+      assert.equal(typeof result.error, "string");
+    });
+  });
+
+  test("returns {ok:false} with a string error when navigator.clipboard is missing", async () => {
+    await withNavigator({}, async () => {
+      const result = await copyTextToClipboard("hello");
+      assert.equal(result.ok, false);
+      assert.equal(typeof result.error, "string");
+    });
+  });
+
+  test("returns {ok:false} with a string error when navigator.clipboard.writeText is not a function", async () => {
+    await withNavigator({ clipboard: { writeText: "not a function" } }, async () => {
+      const result = await copyTextToClipboard("hello");
+      assert.equal(result.ok, false);
+      assert.equal(typeof result.error, "string");
+    });
+  });
+
+  test("returns {ok:true} (and no error field) when writeText resolves successfully", async () => {
+    await withNavigator({ clipboard: { writeText: async () => {} } }, async () => {
+      const result = await copyTextToClipboard("hello");
+      assert.deepEqual(result, { ok: true });
+    });
+  });
+
+  test("returns {ok:false, error:<message>} when writeText rejects with a real Error", async () => {
+    await withNavigator(
+      {
+        clipboard: {
+          writeText: async () => {
+            throw new Error("denied");
+          },
+        },
+      },
+      async () => {
+        const result = await copyTextToClipboard("hello");
+        assert.deepEqual(result, { ok: false, error: "denied" });
+      }
+    );
+  });
+
+  test("returns {ok:false, error:'null'} when writeText rejects with a non-Error `null` value", async () => {
+    await withNavigator({ clipboard: { writeText: () => Promise.reject(null) } }, async () => {
+      const result = await copyTextToClipboard("hello");
+      assert.deepEqual(result, { ok: false, error: "null" });
+    });
+  });
+
+  test("returns {ok:false, error:'undefined'} when writeText rejects with `undefined`", async () => {
+    await withNavigator({ clipboard: { writeText: () => Promise.reject(undefined) } }, async () => {
+      const result = await copyTextToClipboard("hello");
+      assert.deepEqual(result, { ok: false, error: "undefined" });
+    });
+  });
+
+  test("contract fix: error is always a string, even when the rejection value's `message` is a number rather than a real Error", () => {
+    // Before the fix, `err && err.message ? err.message : String(err)` used
+    // `err.message` as-is when truthy, so a reject value like
+    // `{ message: 123 }` (not an Error, `message` a number) leaked a number
+    // straight into `error` -- breaking the doc comment's "error is always a
+    // plain string" contract. The fix routes `err.message` through `String()`
+    // too, keyed on `!== undefined` rather than truthiness (so a falsy but
+    // present message, like `""` or `0`, still takes this branch instead of
+    // falling through to `String(err)`).
+    return withNavigator(
+      { clipboard: { writeText: () => Promise.reject({ message: 123 }) } },
+      async () => {
+        const result = await copyTextToClipboard("hello");
+        assert.equal(typeof result.error, "string");
+        assert.equal(result.error, "123");
+      }
+    );
+  });
+
+  test("each stub restores the original navigator descriptor afterward, so later tests see the real navigator again", () => {
+    // Confirms the `finally` in `withNavigator` actually ran for every test
+    // above: the global `navigator` here is Node's own getter-based
+    // descriptor again, not one of this suite's plain-object stubs leaking
+    // into later tests (this file runs as a single process, in order).
+    const descriptor = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+    assert.equal(typeof descriptor.get, "function");
+    assert.equal(descriptor.set, undefined);
+  });
+});
+
+// ---- fetchFileContents ----
+
+describe("fetchFileContents", () => {
+  async function withFetch(mockFetch, run) {
+    const originalFetch = global.fetch;
+    global.fetch = mockFetch;
+    try {
+      return await run();
+    } finally {
+      global.fetch = originalFetch;
+    }
+  }
+
+  test("resolves with {path, content} entries in the original path order, even when the underlying fetches settle out of order", async () => {
+    const delays = { "a.txt": 30, "b.txt": 10, "c.txt": 20 };
+
+    await withFetch(
+      async (url) => {
+        const path = new URL(url, "http://localhost").searchParams.get("path");
+        await new Promise((resolve) => setTimeout(resolve, delays[path]));
+        return { ok: true, text: async () => `content of ${path}` };
+      },
+      async () => {
+        const result = await fetchFileContents(["a.txt", "b.txt", "c.txt"]);
+        assert.deepEqual(result, [
+          { path: "a.txt", content: "content of a.txt" },
+          { path: "b.txt", content: "content of b.txt" },
+          { path: "c.txt", content: "content of c.txt" },
+        ]);
+      }
+    );
+  });
+
+  test("throws (failing the whole batch) if any single response is not ok, discarding the other successful results", async () => {
+    await withFetch(
+      async (url) => {
+        const path = new URL(url, "http://localhost").searchParams.get("path");
+        if (path === "bad.txt") return { ok: false, status: 404, text: async () => "" };
+        return { ok: true, text: async () => `content of ${path}` };
+      },
+      async () => {
+        await assert.rejects(() => fetchFileContents(["good.txt", "bad.txt"]));
+      }
+    );
+  });
+
+  test("resolves to an empty array for an empty paths list, without calling fetch at all", async () => {
+    await withFetch(
+      async () => {
+        throw new Error("fetch should not be called for an empty paths list");
+      },
+      async () => {
+        const result = await fetchFileContents([]);
+        assert.deepEqual(result, []);
+      }
+    );
+  });
+
+  test("throws (failing the whole batch) if fetch itself throws", async () => {
+    await withFetch(
+      async () => {
+        throw new Error("network down");
+      },
+      async () => {
+        await assert.rejects(() => fetchFileContents(["a.txt"]));
+      }
+    );
   });
 });
