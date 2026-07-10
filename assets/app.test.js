@@ -30,6 +30,7 @@ import {
   formatReferenceWithCode,
   copyTextToClipboard,
   fetchFileContents,
+  formatLabel,
 } from "./app.js";
 
 // ---- extensionOf ----
@@ -1347,5 +1348,33 @@ describe("fetchFileContents", () => {
         await assert.rejects(() => fetchFileContents(["a.txt"]));
       }
     );
+  });
+});
+
+// ---- formatLabel ----
+
+describe("formatLabel", () => {
+  test("returns 'Plain' for 'plain'", () => {
+    assert.equal(formatLabel("plain"), "Plain");
+  });
+
+  test("returns 'Markdown' for 'markdown'", () => {
+    assert.equal(formatLabel("markdown"), "Markdown");
+  });
+
+  test("returns 'XML' for 'xml'", () => {
+    assert.equal(formatLabel("xml"), "XML");
+  });
+
+  test("returns 'Diff' for 'diff'", () => {
+    assert.equal(formatLabel("diff"), "Diff");
+  });
+
+  test("falls back to 'Plain' for an unrecognized format string", () => {
+    assert.equal(formatLabel("bogus"), "Plain");
+  });
+
+  test("falls back to 'Plain' for undefined", () => {
+    assert.equal(formatLabel(undefined), "Plain");
   });
 });
