@@ -21,6 +21,16 @@ cargo run -- .
 cargo run -- ~/repos/my-project
 ```
 
+## Explorer UI
+
+The session page (`GET /{token}`) is a two-pane explorer: a resizable left
+pane with the file tree, selection presets, a path filter, and a recently
+opened list; a right pane that renders every checked file's content as its
+own collapsible panel. It defaults to a dark theme and is implemented as
+plain HTML/CSS/JS (`assets/index.html`, `assets/style.css`, `assets/app.js`,
+all embedded in the binary at build time) with no external network
+dependency and no build step.
+
 ## API
 
 `GET /{token}/api/root` returns the selected root's `basename` and resolved

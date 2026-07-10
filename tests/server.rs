@@ -131,15 +131,29 @@ async fn session_path_responds_and_other_paths_are_rejected() {
 }
 
 #[tokio::test]
-async fn router_returns_the_index_html_body_for_the_valid_token() {
+async fn router_returns_the_index_html_shell_for_the_valid_token() {
+    // The served body is `assets/index.html` with its
+    // `/*__STYLE_PLACEHOLDER__*/` and `//__SCRIPT_PLACEHOLDER__` markers
+    // replaced by the contents of `assets/style.css` and `assets/app.js`
+    // (see `rendered_index_html` in src/lib.rs), so it is no longer a
+    // verbatim match of the template file on disk. Assert the substitution
+    // actually happened instead of a raw file comparison.
     let (addr, token, server) = spawn_test_server().await;
 
     let response = get(addr, &format!("/{token}")).await;
-    let expected_body = include_str!("../assets/index.html");
-    assert_eq!(
-        body_of(&response),
-        expected_body,
-        "expected the response body to match assets/index.html verbatim"
+    let body = body_of(&response);
+
+    assert!(
+        body.contains("<title>prompt-builder-for-sidebar-ai</title>"),
+        "expected the HTML shell's title, got body: {body}"
+    );
+    assert!(
+        !body.contains("__STYLE_PLACEHOLDER__") && !body.contains("__SCRIPT_PLACEHOLDER__"),
+        "expected the CSS/JS placeholders to be substituted, got body: {body}"
+    );
+    assert!(
+        body.contains("data-theme=\"dark\""),
+        "expected the shell to default to the dark theme, got body: {body}"
     );
 
     server.abort();

@@ -7,20 +7,35 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use uuid::Uuid;
 
 pub mod discovery;
 
 use discovery::{discover_tree, is_probably_binary, FileEntry};
 
-/// Minimal HTML shell embedded in the binary.
-///
-/// The explorer UI and code rendering are out of scope for this scaffold;
-/// they land in a follow-up change. File discovery itself is implemented in
-/// the `discovery` module and exposed via `/{token}/api/tree`, and single
-/// files are served via `/{token}/api/file`.
-const INDEX_HTML: &str = include_str!("../assets/index.html");
+/// HTML shell template embedded in the binary. `/*__STYLE_PLACEHOLDER__*/`
+/// and `//__SCRIPT_PLACEHOLDER__` are substituted with [`APP_CSS`] and
+/// [`APP_JS`] at first use by [`rendered_index_html`]; the three files stay
+/// separate on disk (rather than being hand-embedded as Rust string
+/// literals) so `assets/app.js` and `assets/style.css` remain plain,
+/// lintable, syntax-checkable files with no `format!`-style brace escaping.
+const INDEX_TEMPLATE: &str = include_str!("../assets/index.html");
+const APP_CSS: &str = include_str!("../assets/style.css");
+const APP_JS: &str = include_str!("../assets/app.js");
+
+/// Builds the final HTML shell once and reuses it for every request; the
+/// template substitution has no per-request inputs (root/token are read by
+/// the frontend from `/api/root` and the URL itself, not baked into the
+/// HTML).
+fn rendered_index_html() -> &'static str {
+    static RENDERED: OnceLock<String> = OnceLock::new();
+    RENDERED.get_or_init(|| {
+        INDEX_TEMPLATE
+            .replace("/*__STYLE_PLACEHOLDER__*/", APP_CSS)
+            .replace("//__SCRIPT_PLACEHOLDER__", APP_JS)
+    })
+}
 
 /// Resolves and validates the root directory passed on the command line.
 ///
@@ -74,7 +89,7 @@ pub fn build_router(token: &str, root: PathBuf) -> Router {
 }
 
 async fn serve_shell() -> impl IntoResponse {
-    Html(INDEX_HTML)
+    Html(rendered_index_html())
 }
 
 /// Response body for `GET /{token}/api/root`: the selected root's basename

@@ -1,11 +1,70 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
   <head>
     <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>prompt-builder-for-sidebar-ai</title>
+    <style>
+/*__STYLE_PLACEHOLDER__*/
+    </style>
   </head>
   <body>
-    <h1>prompt-builder-for-sidebar-ai</h1>
-    <p>Session is live. The explorer UI, code rendering, and prompt generation are not implemented yet.</p>
+    <div id="app" class="app">
+      <aside id="explorer-pane" class="explorer-pane">
+        <div class="root-info">
+          <h1 id="root-basename" class="root-basename">Loading…</h1>
+          <p id="root-path" class="root-path"></p>
+        </div>
+
+        <div class="presets" role="group" aria-label="Selection presets">
+          <button type="button" class="preset-button" data-preset="all-text">All text files</button>
+          <button type="button" class="preset-button" data-preset="source">Source only</button>
+          <button type="button" class="preset-button" data-preset="docs">Docs only</button>
+          <button type="button" class="preset-button preset-button-clear" data-preset="clear">Clear selection</button>
+        </div>
+
+        <div class="search">
+          <label for="search-input" class="visually-hidden">Filter files by path</label>
+          <input
+            id="search-input"
+            type="search"
+            class="search-input"
+            placeholder="Filter by path…"
+            autocomplete="off"
+            spellcheck="false"
+          />
+        </div>
+
+        <section class="recent" aria-label="Recently opened files">
+          <div class="recent-header">
+            <h2 class="recent-title">Recently opened</h2>
+            <button type="button" id="recent-clear" class="recent-clear-button">Clear</button>
+          </div>
+          <ul id="recent-list" class="recent-list"></ul>
+        </section>
+
+        <nav id="tree-root" class="tree" aria-label="File explorer"></nav>
+      </aside>
+
+      <div
+        id="resizer"
+        class="resizer"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize explorer pane"
+        tabindex="0"
+      ></div>
+
+      <main id="content-pane" class="content-pane">
+        <p id="content-empty-hint" class="empty-hint">
+          Select files in the explorer to see their contents here.
+        </p>
+        <div id="file-panels" class="file-panels"></div>
+      </main>
+    </div>
+
+    <script>
+//__SCRIPT_PLACEHOLDER__
+    </script>
   </body>
 </html>
