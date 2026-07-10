@@ -21,12 +21,44 @@ cargo run -- .
 cargo run -- ~/repos/my-project
 ```
 
-## File discovery
+## Explorer UI
+
+The session page (`GET /{token}`) is a two-pane explorer: a resizable left
+pane with the file tree, selection presets, a path filter, and a recently
+opened list; a right pane that renders every checked file's content as its
+own collapsible panel. It defaults to a dark theme and is implemented as
+plain HTML/CSS/JS (`assets/index.html`, `assets/style.css`, `assets/app.js`,
+all embedded in the binary at build time) with no external network
+dependency and no build step.
+
+## API
+
+`GET /{token}/api/root` returns the selected root's `basename` and resolved
+`absolutePath` as JSON, so the frontend can present the root as the
+explorer's top-level node without ever exposing a way to navigate above it.
 
 `GET /{token}/api/tree` returns a flat, path-sorted JSON list of every
 eligible file and directory under the selected root (see `src/discovery.rs`).
 Each entry has a `/`-separated `path` relative to the root, `is_dir`, and
 `likely_secret`.
+
+`GET /{token}/api/file?path=<relative path>` returns one file's content as
+`text/plain; charset=utf-8`. This is the most security-sensitive endpoint in
+the app: the requested path is validated one path component at a time,
+starting from the canonicalized root. Any component that isn't a plain name
+(a `..`, a leading `/`, or a `.`) is rejected immediately, before the
+filesystem is ever touched; each remaining component is then checked with
+`symlink_metadata` to make sure it isn't a symlink. This means `../`
+traversal, an absolute-path query value, and a symlink anywhere in the path
+(whether it points outside the root or stays inside it) are all refused,
+matching the same "never follow a symlink" invariant `api/tree` already
+uses. A missing/empty `path` query returns 400. Escaping the root, passing
+through a symlink, not existing, or being a directory all return 404 --
+merged into a single status so this endpoint can never be used to tell
+whether something exists outside the selected root (it never returns 403).
+A binary file (by the same NUL-sniffing heuristic `api/tree` uses) returns
+400; content that isn't valid UTF-8 also returns 400. A file that passes
+every check but still can't be read (e.g. a permission error) returns 500.
 
 ### What is excluded
 

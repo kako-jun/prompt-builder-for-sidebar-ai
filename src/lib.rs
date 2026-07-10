@@ -1,21 +1,41 @@
 use axum::{
-    extract::State, http::StatusCode, response::Html, response::IntoResponse, routing::get, Json,
-    Router,
+    extract::{Query, State},
+    http::{header, StatusCode},
+    response::{Html, IntoResponse, Response},
+    routing::get,
+    Json, Router,
 };
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use serde::{Deserialize, Serialize};
+use std::path::{Component, Path, PathBuf};
+use std::sync::{Arc, OnceLock};
 use uuid::Uuid;
 
 pub mod discovery;
 
-use discovery::{discover_tree, FileEntry};
+use discovery::{discover_tree, is_probably_binary, FileEntry};
 
-/// Minimal HTML shell embedded in the binary.
-///
-/// The explorer UI, code rendering, and prompt generation are out of scope
-/// for this scaffold; they land in later issues. File discovery itself is
-/// implemented in the `discovery` module and exposed via `/{token}/api/tree`.
-const INDEX_HTML: &str = include_str!("../assets/index.html");
+/// HTML shell template embedded in the binary. `/*__STYLE_PLACEHOLDER__*/`
+/// and `//__SCRIPT_PLACEHOLDER__` are substituted with [`APP_CSS`] and
+/// [`APP_JS`] at first use by [`rendered_index_html`]; the three files stay
+/// separate on disk (rather than being hand-embedded as Rust string
+/// literals) so `assets/app.js` and `assets/style.css` remain plain,
+/// lintable, syntax-checkable files with no `format!`-style brace escaping.
+const INDEX_TEMPLATE: &str = include_str!("../assets/index.html");
+const APP_CSS: &str = include_str!("../assets/style.css");
+const APP_JS: &str = include_str!("../assets/app.js");
+
+/// Builds the final HTML shell once and reuses it for every request; the
+/// template substitution has no per-request inputs (root/token are read by
+/// the frontend from `/api/root` and the URL itself, not baked into the
+/// HTML).
+fn rendered_index_html() -> &'static str {
+    static RENDERED: OnceLock<String> = OnceLock::new();
+    RENDERED.get_or_init(|| {
+        INDEX_TEMPLATE
+            .replace("/*__STYLE_PLACEHOLDER__*/", APP_CSS)
+            .replace("//__SCRIPT_PLACEHOLDER__", APP_JS)
+    })
+}
 
 /// Resolves and validates the root directory passed on the command line.
 ///
@@ -54,24 +74,181 @@ pub fn generate_session_token() -> String {
 /// bare root `/`, returns 404 so the server cannot be used without the
 /// session token. `root` is the canonicalized directory the session was
 /// started with (see [`resolve_root`]); it is the security boundary that
-/// `/{token}/api/tree` walks via [`discovery::discover_tree`].
+/// `/{token}/api/tree` walks via [`discovery::discover_tree`] and that
+/// `/{token}/api/file` validates every request against.
 pub fn build_router(token: &str, root: PathBuf) -> Router {
     let state = Arc::new(root);
 
     Router::new()
         .route(&format!("/{token}"), get(serve_shell))
+        .route(&format!("/{token}/api/root"), get(serve_root))
         .route(&format!("/{token}/api/tree"), get(serve_tree))
+        .route(&format!("/{token}/api/file"), get(serve_file))
         .fallback(not_found)
         .with_state(state)
 }
 
 async fn serve_shell() -> impl IntoResponse {
-    Html(INDEX_HTML)
+    Html(rendered_index_html())
+}
+
+/// Response body for `GET /{token}/api/root`: the selected root's basename
+/// and resolved absolute path, so the frontend can present the root as the
+/// top-level explorer node without ever needing to navigate above it.
+#[derive(Serialize)]
+struct RootInfo {
+    basename: String,
+    #[serde(rename = "absolutePath")]
+    absolute_path: String,
+}
+
+async fn serve_root(State(root): State<Arc<PathBuf>>) -> impl IntoResponse {
+    let basename = root
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| root.display().to_string());
+    let absolute_path = root.display().to_string();
+
+    Json(RootInfo {
+        basename,
+        absolute_path,
+    })
 }
 
 async fn serve_tree(State(root): State<Arc<PathBuf>>) -> impl IntoResponse {
     let entries: Vec<FileEntry> = discover_tree(&root);
     Json(entries)
+}
+
+/// Query parameters for `GET /{token}/api/file`.
+#[derive(Deserialize)]
+struct FileQuery {
+    path: Option<String>,
+}
+
+/// Serves the plain-text content of a single file beneath the selected
+/// root.
+///
+/// This is the most security-sensitive endpoint in the app (see the
+/// `discovery` module docs for the broader threat model this project treats
+/// as a first-class concern: a path-traversal bug here is exactly the kind
+/// of bug this tool exists to avoid). Rather than joining the untrusted
+/// `path` query value onto the root in one shot and canonicalizing the
+/// result (which would let a request "probe" whether something exists
+/// outside the root, and would not notice a symlink that happens to resolve
+/// back inside the root), the request path is validated one path component
+/// at a time:
+///
+/// 1. Every component of the untrusted `path` query value must be
+///    [`Component::Normal`]. A `..` (`ParentDir`), a leading `/`
+///    (`RootDir`/`Prefix`), or a `.` (`CurDir`) component is rejected with
+///    404 immediately, before anything ever touches the filesystem. This is
+///    what makes the traversal case symmetric with the
+///    doesn't-exist case: whether `../secret.txt` exists outside the root or
+///    not, the request is rejected at the parsing stage, so the response
+///    can never be used as an oracle for what exists outside the root.
+/// 2. Starting from the canonicalized root, each `Normal` component is
+///    pushed onto the path one at a time, and
+///    [`std::fs::symlink_metadata`] (which, unlike [`std::fs::metadata`],
+///    does not follow a symlink) is checked at every step. If any
+///    intermediate component -- or the final one -- is a symlink, or
+///    doesn't exist, the request is rejected with 404. This makes
+///    `/api/file` refuse symlinks under exactly the same rule
+///    `discovery::discover_tree` already uses for `/api/tree` (symlinks are
+///    never followed, never served), instead of only checking where a fully
+///    resolved symlink chain ends up.
+/// 3. Once every component has been validated, the resulting path must be a
+///    regular file (not missing, not a directory, not a FIFO/socket/device)
+///    before it is ever opened, the same discipline `discover_tree` uses and
+///    for the same reason: opening a FIFO with no writer can hang forever.
+/// 4. Reusing [`discovery::is_probably_binary`] (the exact same NUL-sniffing
+///    heuristic `/{token}/api/tree` uses to exclude binaries) to refuse
+///    binary files instead of dumping raw bytes into the page.
+///
+/// A missing/empty `path` query returns 400. Escaping the root, passing
+/// through a symlink at any point, or not existing all return 404 --
+/// deliberately merged into one status, so this endpoint can never be used
+/// to distinguish "outside the root and exists" from "outside the root and
+/// doesn't exist" (this endpoint never returns 403; there is no longer a
+/// response that would tell a caller "something is there, you're just not
+/// allowed to see it"). A directory path also returns 404. A binary file
+/// returns 400. A file that exists, is a regular file, and passed every
+/// check above but still can't be read (e.g. a permission error) returns 500,
+/// distinct from the binary-file 400 so callers aren't told a permission
+/// error is a binary-format problem. File bytes that are not valid UTF-8 are
+/// rejected with 400 rather than lossily replacing the invalid bytes, so
+/// callers can tell the difference between "this is text" and "this looked
+/// like text to the NUL-sniff heuristic but isn't valid UTF-8".
+async fn serve_file(State(root): State<Arc<PathBuf>>, Query(query): Query<FileQuery>) -> Response {
+    let requested_path = match query.path.as_deref() {
+        Some(path) if !path.is_empty() => path,
+        _ => return (StatusCode::BAD_REQUEST, "missing 'path' query parameter").into_response(),
+    };
+
+    // `root` is already canonicalized by `resolve_root` in the normal
+    // (main.rs) path, but re-canonicalizing here is cheap and makes this
+    // function correct regardless of what the caller passed as `root`
+    // (e.g. a test harness that skips `resolve_root`).
+    let canonical_root = match std::fs::canonicalize(root.as_path()) {
+        Ok(canonical_root) => canonical_root,
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "failed to resolve the root directory",
+            )
+                .into_response()
+        }
+    };
+
+    // Build the candidate path one `Normal` component at a time, checking at
+    // every step that the component neither escapes the root (by rejecting
+    // anything other than `Normal` outright, before touching the
+    // filesystem) nor passes through a symlink. See the function doc comment
+    // above for why this replaces the previous "join, canonicalize, then
+    // `starts_with`" approach.
+    let mut candidate = canonical_root.clone();
+    for component in Path::new(requested_path).components() {
+        let Component::Normal(part) = component else {
+            return (StatusCode::NOT_FOUND, "file not found").into_response();
+        };
+        candidate.push(part);
+        match std::fs::symlink_metadata(&candidate) {
+            Ok(metadata) if !metadata.file_type().is_symlink() => {}
+            _ => return (StatusCode::NOT_FOUND, "file not found").into_response(),
+        }
+    }
+
+    let is_regular_file = std::fs::metadata(&candidate)
+        .map(|metadata| metadata.file_type().is_file())
+        .unwrap_or(false);
+    if !is_regular_file {
+        return (StatusCode::NOT_FOUND, "file not found").into_response();
+    }
+
+    match is_probably_binary(&candidate) {
+        Ok(true) => {
+            return (StatusCode::BAD_REQUEST, "binary files are not supported").into_response()
+        }
+        Ok(false) => {}
+        Err(_) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, "could not read file").into_response()
+        }
+    }
+
+    let bytes = match std::fs::read(&candidate) {
+        Ok(bytes) => bytes,
+        Err(_) => return (StatusCode::NOT_FOUND, "file not found").into_response(),
+    };
+
+    match String::from_utf8(bytes) {
+        Ok(text) => (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+            text,
+        )
+            .into_response(),
+        Err(_) => (StatusCode::BAD_REQUEST, "file is not valid UTF-8").into_response(),
+    }
 }
 
 async fn not_found() -> impl IntoResponse {
