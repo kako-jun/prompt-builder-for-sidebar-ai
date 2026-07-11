@@ -1174,17 +1174,6 @@ export const PROMPT_GOALS = [
   { value: "plan", label: "Plan implementation" },
 ];
 
-const PROMPT_GOAL_INSTRUCTIONS = {
-  locate: "Locate the code and functions most relevant to the request below.",
-  explain: "Explain what this code does and how it works.",
-  "investigate-bug":
-    "Investigate the described bug (or its impact), including its likely root cause.",
-  review: "Review this code's design and/or security, and list any concerns.",
-  "extract-tests": "Extract or propose test cases that cover this code's behavior.",
-  refactor: "Suggest refactoring opportunities here and explain why each would help.",
-  plan: "Produce an implementation plan for the request below.",
-};
-
 export const PROMPT_TARGETS = [
   { value: "page", label: "Whole page" },
   { value: "checked", label: "Checked files" },
@@ -1202,15 +1191,6 @@ export const PROMPT_OUTPUTS = [
   { value: "file", label: "Downloadable file" },
 ];
 
-const PROMPT_OUTPUT_INSTRUCTIONS = {
-  concise: "Respond with a concise answer.",
-  report: "Respond with a structured investigation report.",
-  issue: "Respond with a GitHub issue, ready to file, with a clear title and body.",
-  instructions: "Respond with step-by-step instructions for an implementation agent.",
-  checklist: "Respond with a checklist.",
-  diff: "Respond with a unified diff.",
-};
-
 export const PROMPT_CONTEXT_MODES = [
   { value: "page", label: "Page context only" },
   { value: "excerpts", label: "Referenced excerpts" },
@@ -1224,24 +1204,26 @@ export const PROMPT_CONTEXT_MODES = [
  * explanatory fallback phrase (rather than an empty/misleading list) when
  * nothing is currently checked/selected, so the resulting prompt still reads
  * as a coherent sentence in that state. */
-export function describePromptTarget(target, data = {}) {
+export function describePromptTarget(target, data = {}, locale = "en") {
   const checkedRefs = data.checkedRefs || [];
   const lineRefs = data.lineRefs || [];
 
   switch (target) {
     case "checked":
       return checkedRefs.length > 0
-        ? `the checked files: ${checkedRefs.join(", ")}`
-        : "the checked files (none are currently checked -- check some files in the explorer first)";
+        ? tr(locale, "target.checked.phrase", { refs: checkedRefs.join(", ") })
+        : tr(locale, "target.checked.empty");
     case "lines":
       return lineRefs.length > 0
-        ? `the selected line range${lineRefs.length > 1 ? "s" : ""}: ${lineRefs.join(", ")}`
-        : "the selected line range (no lines are currently selected -- click a line number in an open file first)";
+        ? tr(locale, lineRefs.length > 1 ? "target.lines.phrasePlural" : "target.lines.phrase", {
+            refs: lineRefs.join(", "),
+          })
+        : tr(locale, "target.lines.empty");
     case "diff":
-      return "the current Git diff of this project";
+      return tr(locale, "target.diff.phrase");
     case "page":
     default:
-      return "the whole page (everything currently visible in this browser tab)";
+      return tr(locale, "target.page.phrase");
   }
 }
 
@@ -1249,12 +1231,13 @@ export function describePromptTarget(target, data = {}) {
  * "file" is special-cased since it also needs `filename`; an empty/blank
  * `filename` falls back to "output.md" so the instruction is always a
  * complete, valid sentence rather than naming an empty file. */
-export function describePromptOutput(output, filename) {
+export function describePromptOutput(output, filename, locale = "en") {
   if (output === "file") {
     const name = filename && filename.trim() ? filename.trim() : "output.md";
-    return `Generate the response as a downloadable file named ${formatInlineCode(name)}.`;
+    return tr(locale, "output.file.instruction", { name: formatInlineCode(name) });
   }
-  return PROMPT_OUTPUT_INSTRUCTIONS[output] || PROMPT_OUTPUT_INSTRUCTIONS.concise;
+  const key = `output.${output}.instruction`;
+  return tr(locale, MESSAGES.en[key] !== undefined ? key : "output.concise.instruction");
 }
 
 /** Builds the prompt's "## Context" section, embedding `contextEntries`
@@ -1293,30 +1276,32 @@ export function describePromptOutput(output, filename) {
  * was gathered (nothing selected/checked yet), returns an explanatory
  * placeholder instead of an empty/misleading section, so the caller doesn't
  * have to special-case "mode wants content but there isn't any" itself. */
-export function buildPromptContextSection(contextMode, contextEntries, target) {
+export function buildPromptContextSection(contextMode, contextEntries, target, locale = "en") {
+  const heading = tr(locale, "context.heading");
+
   if (target === "diff") {
     if (contextMode === "page") {
-      return '(Git diff content is never shown on the page itself, so "Page context only" can\'t include it here. Switch context mode to "Referenced excerpts" or "Full selected files" to embed the diff.)';
+      return tr(locale, "context.diff.pageNote");
     }
     const entry = contextEntries && contextEntries[0];
-    if (!entry) return "(No Git diff information is available.)";
+    if (!entry) return tr(locale, "context.diff.none");
     if (!entry.isDiff) return entry.content;
     const fence = markdownFenceFor(entry.content);
-    return `## Context\n\n### Git diff\n\n${fence}diff\n${entry.content}\n${fence}\n`;
+    return `${heading}\n\n${tr(locale, "context.gitDiffHeading")}\n\n${fence}diff\n${entry.content}\n${fence}\n`;
   }
 
   if (contextMode === "page") return "";
 
   if (!contextEntries || contextEntries.length === 0) {
     return contextMode === "excerpts"
-      ? '(No line range is currently selected, so no excerpt could be embedded here. Select one first, or switch context mode to "Page context only".)'
-      : '(No files are currently checked, so no content could be embedded here. Check some files first, or switch context mode to "Page context only".)';
+      ? tr(locale, "context.excerpts.none")
+      : tr(locale, "context.full.none");
   }
 
   const body = contextEntries
     .map((entry) => formatReferenceWithCode(entry.ref, entry.content, "markdown"))
     .join("\n");
-  return `## Context\n\n${body}`;
+  return `${heading}\n\n${body}`;
 }
 
 /** Assembles the full editable prompt text from every composer choice. Pure
@@ -1326,7 +1311,7 @@ export function buildPromptContextSection(contextMode, contextEntries, target) {
  * selected yet" edge case -- is expected to produce a complete, coherent
  * block of text; degrading gracefully rather than omitting a section is the
  * job of `describePromptTarget`/`buildPromptContextSection` above. */
-export function buildPromptText(options) {
+export function buildPromptText(options, locale = "en") {
   const {
     goal,
     target,
@@ -1339,22 +1324,23 @@ export function buildPromptText(options) {
     contextEntries = [],
   } = options;
 
+  const goalKey = `goal.${goal}.instruction`;
   const parts = [
-    PROMPT_GOAL_INSTRUCTIONS[goal] || PROMPT_GOAL_INSTRUCTIONS.explain,
-    `Target: ${describePromptTarget(target, { checkedRefs, lineRefs })}.`,
-    describePromptOutput(output, filename),
+    tr(locale, MESSAGES.en[goalKey] !== undefined ? goalKey : "goal.explain.instruction"),
+    tr(locale, "prompt.targetLine", {
+      target: describePromptTarget(target, { checkedRefs, lineRefs }, locale),
+    }),
+    describePromptOutput(output, filename, locale),
   ];
 
   const trimmedExtra = (extraInstructions || "").trim();
   if (trimmedExtra) {
-    parts.push(`Additional instructions:\n${trimmedExtra}`);
+    parts.push(tr(locale, "prompt.additionalInstructions", { text: trimmedExtra }));
   }
 
-  parts.push(
-    "When referring to a specific location in the code, use the stable references shown on the page (@file:..., @dir:..., @lines:...) so it can be traced back precisely."
-  );
+  parts.push(tr(locale, "prompt.referenceNote"));
 
-  const contextSection = buildPromptContextSection(contextMode, contextEntries, target);
+  const contextSection = buildPromptContextSection(contextMode, contextEntries, target, locale);
   if (contextSection) parts.push(contextSection);
 
   return parts.join("\n\n");
@@ -1425,18 +1411,22 @@ export function formatWithThousandsSeparator(value) {
 
 /** Formats a [`computeSelectionStats`] result as the one line of text the
  * content toolbar displays. */
-export function formatSelectionStats(stats) {
+export function formatSelectionStats(stats, locale = "en") {
   const { fileCount, pendingCount, charCount, estimatedTokens, isLarge } = stats;
 
-  if (fileCount === 0) return "No files selected.";
+  if (fileCount === 0) return tr(locale, "stats.none");
 
-  const fileLabel = fileCount === 1 ? "1 file selected" : `${fileCount} files selected`;
-  const pendingSuffix = pendingCount > 0 ? ` (${pendingCount} still loading)` : "";
-  const base = `${fileLabel}${pendingSuffix} · ${formatWithThousandsSeparator(
-    charCount
-  )} characters · ~${formatWithThousandsSeparator(estimatedTokens)} tokens (rough estimate)`;
+  const fileLabel =
+    fileCount === 1 ? tr(locale, "stats.oneFile") : tr(locale, "stats.manyFiles", { count: fileCount });
+  const pendingSuffix = pendingCount > 0 ? tr(locale, "stats.pending", { count: pendingCount }) : "";
+  const base = tr(locale, "stats.base", {
+    files: fileLabel,
+    pending: pendingSuffix,
+    chars: formatWithThousandsSeparator(charCount),
+    tokens: formatWithThousandsSeparator(estimatedTokens),
+  });
 
-  return isLarge ? `${base} · ⚠ large selection` : base;
+  return isLarge ? `${base}${tr(locale, "stats.large")}` : base;
 }
 
 // ---- Search filter ----
