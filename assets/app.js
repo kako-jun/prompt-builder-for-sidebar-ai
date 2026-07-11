@@ -386,7 +386,7 @@ let activeLocale = null;
  * else falls back to English. All storage/navigator access is guarded so a
  * private-browsing or non-browser context degrades to "en" instead of
  * throwing. */
-function detectInitialLocale() {
+export function detectInitialLocale() {
   try {
     const stored = localStorage.getItem(LOCALE_STORAGE_KEY);
     if (SUPPORTED_LOCALES.includes(stored)) return stored;
@@ -428,7 +428,7 @@ export function setLocale(loc) {
  * is never interpreted as a replacement pattern, and so a value that itself
  * contains a `{placeholder}` token is inserted verbatim rather than being
  * re-substituted. */
-function substituteParams(template, params) {
+export function substituteParams(template, params) {
   if (!params) return template;
   return template.replace(/\{(\w+)\}/g, (match, key) =>
     key in params ? String(params[key]) : match
