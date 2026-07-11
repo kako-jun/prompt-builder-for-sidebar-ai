@@ -152,7 +152,18 @@
               </svg>
               <span data-i18n="recent.title">Recently opened</span>
             </h2>
-            <button type="button" id="recent-clear" class="recent-clear-button" data-i18n="recent.clear">Clear history</button>
+            <button type="button" id="recent-clear" class="recent-clear-button">
+              <svg class="recent-clear-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                <path
+                  d="M4 4l8 8M12 4l-8 8"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.3"
+                  stroke-linecap="round"
+                />
+              </svg>
+              <span data-i18n="recent.clear">Clear history</span>
+            </button>
           </div>
           <ul id="recent-list" class="recent-list"></ul>
         </section>

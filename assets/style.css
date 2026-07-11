@@ -288,6 +288,9 @@ button {
 }
 
 .recent-clear-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
   background: none;
   border: 1px dashed var(--border);
   border-radius: 999px;
@@ -295,6 +298,12 @@ button {
   cursor: pointer;
   font-size: 0.72rem;
   padding: 0.15rem 0.55rem;
+}
+
+.recent-clear-icon {
+  width: 0.7rem;
+  height: 0.7rem;
+  flex-shrink: 0;
 }
 
 .recent-clear-button:hover {
