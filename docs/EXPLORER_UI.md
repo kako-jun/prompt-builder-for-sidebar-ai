@@ -11,10 +11,18 @@ restates this README's disclaimer: content copied from here may be pasted
 into a third-party AI, and file content can carry prompt-injection text.
 
 The app icon (`assets/icon.png`) is embedded too and inlined as a `data:`
-URI -- serving as both the page favicon and the small logo badge at the very
-top-left of the explorer pane -- so it costs no extra request and never
-triggers a `/favicon.ico` 404. The logo carries the branding in place of the
-long app name; the full name shows on hover via its `alt`/`title`.
+URI -- serving as the page favicon (`<link rel="icon">`), an
+`apple-touch-icon` link, and the small logo badge at the very top-left of the
+explorer pane -- so it costs no extra request. The `<link rel="icon">` means
+the browser never probes `/favicon.ico` (no more 404 for it). The
+`apple-touch-icon` link is best-effort: some iOS Safari versions ignore a
+`data:` URI there and fall back to a screenshot thumbnail when the page is
+added to the home screen, which does not apply to this tool's normal
+localhost-tab usage. The logo carries the branding in place of the long app
+name; the full name shows on hover via its `alt`/`title`. It is intentionally
+not a link or button -- this is a single-root-per-session tool, so there is
+nowhere to navigate "home" to (that becomes meaningful once issue #11 adds a
+root picker).
 
 ## Language (English / Japanese)
 
