@@ -10,6 +10,12 @@ dependency and no build step. A persistent notice at the top of the page
 restates this README's disclaimer: content copied from here may be pasted
 into a third-party AI, and file content can carry prompt-injection text.
 
+The app icon (`assets/icon.png`) is embedded too and inlined as a `data:`
+URI -- serving as both the page favicon and the small logo badge at the very
+top-left of the explorer pane -- so it costs no extra request and never
+triggers a `/favicon.ico` 404. The logo carries the branding in place of the
+long app name; the full name shows on hover via its `alt`/`title`.
+
 ## Language (English / Japanese)
 
 The UI ships in two languages -- English (the source and fallback) and
