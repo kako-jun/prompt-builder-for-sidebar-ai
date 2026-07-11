@@ -22,26 +22,20 @@ A local browser that builds prompts for sidebar AI from your files.
 
 ## Installation
 
-> [!NOTE]
-> Not yet published to crates.io. Until the first release, build from a
-> local checkout instead:
->
-> ```console
-> git clone https://github.com/kako-jun/prompt-builder-for-sidebar-ai
-> cd prompt-builder-for-sidebar-ai
-> cargo run -- [ROOT]
-> ```
->
-> Once published, this section will be:
->
-> ```console
-> cargo install prompt-builder-for-sidebar-ai
-> ```
+```console
+cargo install prompt-builder-for-sidebar-ai
+```
 
-Requires the Rust toolchain (`cargo`). Below, `prompt-builder-for-sidebar-ai`
-refers to the installed binary once available; for now, substitute
-`cargo run --` for it (i.e. `cargo run -- [ROOT]` in place of
-`prompt-builder-for-sidebar-ai [ROOT]`).
+Requires the Rust toolchain (`cargo`). This installs the
+`prompt-builder-for-sidebar-ai` binary; see [Usage](#usage) below to run it.
+
+To build from a local checkout of this repository instead:
+
+```console
+git clone https://github.com/kako-jun/prompt-builder-for-sidebar-ai
+cd prompt-builder-for-sidebar-ai
+cargo run -- [ROOT]
+```
 
 ## Usage
 
