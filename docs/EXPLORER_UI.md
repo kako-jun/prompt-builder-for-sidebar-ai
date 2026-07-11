@@ -38,6 +38,14 @@ the result textarea is still exactly what the composer last generated (i.e.
 untouched), it is regenerated in the new language; if it has been hand-edited,
 it is left as-is so a language switch never discards manual edits.
 
+This "localize everything" rule covers the transient status prose too, not just
+the fixed labels: the Git-diff target's status lines ("no local changes", "not
+a Git repository", a failed diff fetch) and a file/tree/root load-failure
+message are all drawn from the catalog and re-rendered on a language switch, so
+none of them can leave an English string stranded (or blank the tree) after the
+user changes languages. Only the embedded technical detail -- a path, an HTTP
+status -- stays verbatim, since it isn't language-specific.
+
 ## Line numbers, stable references, and URL navigation
 
 Each open file panel shows 1-based line numbers down its left edge; they are

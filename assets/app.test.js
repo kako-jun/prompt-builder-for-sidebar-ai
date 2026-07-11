@@ -39,6 +39,7 @@ import {
   describePromptOutput,
   buildPromptContextSection,
   buildPromptText,
+  describeGitDiff,
   formatInlineCode,
   sliceSelectedLines,
   computeSelectionStats,
@@ -1729,10 +1730,19 @@ describe("buildPromptContextSection", () => {
     }
   });
 
-  test("target 'diff' falls back to an explanatory placeholder when no entry is given at all", () => {
+  test("target 'diff' falls back to the (localized) clean-tree placeholder when no entry is given at all", () => {
+    // The `!entry` branch is defensively unreachable in production, so it reuses
+    // the clean-tree wording rather than carrying its own separate string.
     for (const mode of ["excerpts", "full"]) {
-      assert.match(buildPromptContextSection(mode, [], "diff"), /No Git diff information is available/);
-      assert.match(buildPromptContextSection(mode, undefined, "diff"), /No Git diff information is available/);
+      assert.match(buildPromptContextSection(mode, [], "diff"), /No local changes: the working tree is clean/);
+      assert.match(
+        buildPromptContextSection(mode, undefined, "diff"),
+        /No local changes: the working tree is clean/
+      );
+      assert.equal(
+        buildPromptContextSection(mode, [], "diff", "ja"),
+        "（ローカルの変更はありません。作業ツリーはクリーンです。）"
+      );
     }
   });
 
@@ -1743,6 +1753,121 @@ describe("buildPromptContextSection", () => {
       "diff"
     );
     assert.match(section, /````diff\n/);
+  });
+});
+
+describe("i18n diff/file-load status keys (issue #22, should-1/nit-1)", () => {
+  const DIFF_STATUS_KEYS = ["diff.status.notRepo", "diff.status.clean", "diff.status.loadFailed"];
+
+  test("every new diff-status key resolves in both en and ja (no blank, no en fallback for ja)", () => {
+    for (const key of DIFF_STATUS_KEYS) {
+      const en = tr("en", key, { detail: "X" });
+      const ja = tr("ja", key, { detail: "X" });
+      // A missing key would fall back to the key string itself.
+      assert.notEqual(en, key, `en missing ${key}`);
+      assert.notEqual(ja, key, `ja missing ${key}`);
+      assert.notEqual(en, "");
+      assert.notEqual(ja, "");
+      // A ja key that merely fell back to en would compare equal.
+      assert.notEqual(ja, en, `ja should differ from en for ${key}`);
+    }
+  });
+
+  test("clean-tree / not-a-repo status strings are the expected prose in each locale", () => {
+    assert.equal(tr("en", "diff.status.clean"), "(No local changes: the working tree is clean.)");
+    assert.equal(tr("ja", "diff.status.clean"), "（ローカルの変更はありません。作業ツリーはクリーンです。）");
+    assert.equal(
+      tr("en", "diff.status.notRepo"),
+      "(This directory is not a Git repository, so there is no diff to show.)"
+    );
+    assert.equal(
+      tr("ja", "diff.status.notRepo"),
+      "（このディレクトリは Git リポジトリではないため、表示できる差分はありません。）"
+    );
+  });
+
+  test("loadFailed keeps the technical {detail} verbatim while localizing the surrounding prose", () => {
+    assert.equal(
+      tr("en", "diff.status.loadFailed", { detail: "HTTP 500" }),
+      "(failed to load the Git diff: HTTP 500)"
+    );
+    assert.equal(
+      tr("ja", "diff.status.loadFailed", { detail: "HTTP 500" }),
+      "（Git 差分の取得に失敗しました: HTTP 500）"
+    );
+  });
+
+  test("file.loadFailed (reused for embed failures) exists in both locales and carries {err} verbatim", () => {
+    assert.equal(tr("en", "file.loadFailed", { err: '"a.js": HTTP 404' }), '(failed to load: "a.js": HTTP 404)');
+    assert.equal(tr("ja", "file.loadFailed", { err: '"a.js": HTTP 404' }), "（読み込みに失敗しました: \"a.js\": HTTP 404）");
+  });
+});
+
+describe("describeGitDiff (issue #22, should-1)", () => {
+  test("returns real diff text verbatim as isDiff:true, untranslated, in any locale", () => {
+    const diff = "diff --git a/x b/x\n+added";
+    for (const locale of ["en", "ja"]) {
+      assert.deepEqual(describeGitDiff({ isGitRepo: true, diff }, locale), { content: diff, isDiff: true });
+    }
+  });
+
+  test("clean working tree resolves to localized prose (isDiff:false), no English literal in ja", () => {
+    assert.deepEqual(describeGitDiff({ isGitRepo: true, diff: "" }, "en"), {
+      content: "(No local changes: the working tree is clean.)",
+      isDiff: false,
+    });
+    const ja = describeGitDiff({ isGitRepo: true, diff: "" }, "ja");
+    assert.equal(ja.content, "（ローカルの変更はありません。作業ツリーはクリーンです。）");
+    assert.equal(ja.isDiff, false);
+    assert.doesNotMatch(ja.content, /No local changes|working tree|clean/);
+  });
+
+  test("non-Git directory resolves to localized prose (isDiff:false), no English literal in ja", () => {
+    const ja = describeGitDiff({ isGitRepo: false, diff: "" }, "ja");
+    assert.equal(ja.content, "（このディレクトリは Git リポジトリではないため、表示できる差分はありません。）");
+    assert.equal(ja.isDiff, false);
+    assert.doesNotMatch(ja.content, /not a Git repository|diff to show/);
+  });
+
+  test("defaults to English when no locale is passed", () => {
+    assert.equal(
+      describeGitDiff({ isGitRepo: false, diff: "" }).content,
+      "(This directory is not a Git repository, so there is no diff to show.)"
+    );
+  });
+});
+
+describe("buildPromptText — diff-status prose is localized end-to-end (issue #22, should-1 regression)", () => {
+  const baseDiffOptions = (contextEntries) => ({
+    goal: "explain",
+    target: "diff",
+    output: "concise",
+    contextMode: "full",
+    filename: "",
+    extraInstructions: "",
+    checkedRefs: [],
+    lineRefs: [],
+    contextEntries,
+  });
+
+  test("ja prompt for a clean working tree carries the ja status sentence and no English diff-status literal", () => {
+    // Content is what gatherDiffEntries -> describeGitDiff produces for a clean
+    // tree in ja; buildPromptText must pass it through without English leaking.
+    const jaClean = describeGitDiff({ isGitRepo: true, diff: "" }, "ja");
+    const text = buildPromptText(baseDiffOptions([{ ref: "@diff", ...jaClean }]), "ja");
+    assert.match(text, /（ローカルの変更はありません。作業ツリーはクリーンです。）/);
+    assert.doesNotMatch(text, /No local changes/);
+    assert.doesNotMatch(text, /working tree is clean/);
+    assert.doesNotMatch(text, /is not a Git repository/);
+    assert.doesNotMatch(text, /failed to load the Git diff/);
+  });
+
+  test("ja prompt for a non-Git directory carries the ja status sentence and no English diff-status literal", () => {
+    const jaNotRepo = describeGitDiff({ isGitRepo: false, diff: "" }, "ja");
+    const text = buildPromptText(baseDiffOptions([{ ref: "@diff", ...jaNotRepo }]), "ja");
+    assert.match(text, /Git リポジトリではないため/);
+    assert.doesNotMatch(text, /not a Git repository/);
+    assert.doesNotMatch(text, /No local changes/);
   });
 });
 

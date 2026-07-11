@@ -101,7 +101,14 @@ const MESSAGES = {
     "context.gitDiffHeading": "### Git diff",
     "context.diff.pageNote":
       '(Git diff content is never shown on the page itself, so "Page context only" can\'t include it here. Switch context mode to "Referenced excerpts" or "Full selected files" to embed the diff.)',
-    "context.diff.none": "(No Git diff information is available.)",
+    // Git-diff target status lines embedded in the generated prompt (issue #22:
+    // these are user-visible prose, so they live in the catalog rather than
+    // being hardcoded in `gatherDiffEntries`). `diff.status.clean` doubles as
+    // `buildPromptContextSection`'s defensive "no entry at all" fallback, which
+    // is why there is no separate generic "no diff" message.
+    "diff.status.notRepo": "(This directory is not a Git repository, so there is no diff to show.)",
+    "diff.status.clean": "(No local changes: the working tree is clean.)",
+    "diff.status.loadFailed": "(failed to load the Git diff: {detail})",
     "context.excerpts.none":
       '(No line range is currently selected, so no excerpt could be embedded here. Select one first, or switch context mode to "Page context only".)',
     "context.full.none":
@@ -261,7 +268,9 @@ const MESSAGES = {
     "context.gitDiffHeading": "### Git差分",
     "context.diff.pageNote":
       "（Git差分はページ自体には表示されないため、「ページのコンテキストのみ」ではここに含められません。差分を埋め込むには、コンテキストモードを「参照した抜粋」または「選択したファイル全体」に切り替えてください。）",
-    "context.diff.none": "（利用できるGit差分の情報がありません。）",
+    "diff.status.notRepo": "（このディレクトリは Git リポジトリではないため、表示できる差分はありません。）",
+    "diff.status.clean": "（ローカルの変更はありません。作業ツリーはクリーンです。）",
+    "diff.status.loadFailed": "（Git 差分の取得に失敗しました: {detail}）",
     "context.excerpts.none":
       "（現在選択されている行範囲がないため、抜粋を埋め込めませんでした。まず選択するか、コンテキストモードを「ページのコンテキストのみ」に切り替えてください。）",
     "context.full.none":
@@ -473,12 +482,25 @@ const state = {
   // clobbered).
   lastGeneratedPrompt: "",
   promptGenerated: false,
+  // Last tree/root load-failure state, as `{ key, params }` (or null when the
+  // load succeeded). Kept so a locale switch can re-render the failure message
+  // in the new language instead of blanking it out (issue #22): `renderTree`
+  // clears `#tree-root` and returns early when there's no `rootNode`, and
+  // nothing re-renders `#root-basename` on its own, so without this the
+  // failure text would either vanish or stay stuck in the old language.
+  treeLoadError: null,
+  rootLoadError: null,
 };
 
 let el = {};
 
 async function init() {
   wireLocaleSwitcher();
+  // Known/accepted (issue #22, nit): the HTML ships English static chrome, so a
+  // ja user can see a brief English flash before this runs. This module is
+  // deferred but executes near-immediately, so the flash is negligible;
+  // duplicating the whole catalog into the pre-paint HTML to avoid it isn't
+  // worth it for a self-hosted single-file tool.
   applyStaticI18n();
   document.documentElement.lang = getLocale();
   syncLocaleControl();
@@ -509,14 +531,28 @@ async function loadRoot() {
   try {
     const response = await fetch(apiUrl("/api/root"));
     if (!response.ok) {
-      el.rootBasename.textContent = t("root.loadFailedHttp", { status: response.status });
+      state.rootLoadError = { key: "root.loadFailedHttp", params: { status: response.status } };
+      renderRootBasename();
       return;
     }
     const data = await response.json();
+    state.rootLoadError = null;
     el.rootBasename.textContent = data.basename;
     el.rootPath.textContent = data.absolutePath;
   } catch (err) {
-    el.rootBasename.textContent = t("root.loadFailed");
+    state.rootLoadError = { key: "root.loadFailed", params: null };
+    renderRootBasename();
+  }
+}
+
+/** Re-applies the root-basename load-failure message in the active locale.
+ * A successful load shows the real basename (not a translatable string), so
+ * this only ever needs to act when a failure is currently latched; it's called
+ * both from `loadRoot` and from `renderAll` on a locale switch. */
+function renderRootBasename() {
+  if (!el.rootBasename) return;
+  if (state.rootLoadError) {
+    el.rootBasename.textContent = t(state.rootLoadError.key, state.rootLoadError.params);
   }
 }
 
@@ -524,10 +560,12 @@ async function loadTree() {
   try {
     const response = await fetch(apiUrl("/api/tree"));
     if (!response.ok) {
-      el.treeRoot.textContent = t("tree.loadFailedHttp", { status: response.status });
+      state.treeLoadError = { key: "tree.loadFailedHttp", params: { status: response.status } };
+      renderTree();
       return;
     }
     const data = await response.json();
+    state.treeLoadError = null;
     state.entries = data.entries;
     buildTree(data.entries);
     renderTree();
@@ -535,7 +573,8 @@ async function loadTree() {
     // walk short, so an incomplete list never silently looks complete.
     el.treeTruncationWarning.hidden = !data.truncated;
   } catch (err) {
-    el.treeRoot.textContent = t("tree.loadFailed");
+    state.treeLoadError = { key: "tree.loadFailed", params: null };
+    renderTree();
   }
 }
 
@@ -620,6 +659,13 @@ export function sortedChildren(node) {
 
 function renderTree() {
   el.treeRoot.innerHTML = "";
+  // A latched load failure (issue #22) is re-rendered here in the active
+  // locale, so a language switch updates the message instead of blanking it
+  // (the `!state.rootNode` early return below would otherwise leave it empty).
+  if (state.treeLoadError) {
+    el.treeRoot.textContent = t(state.treeLoadError.key, state.treeLoadError.params);
+    return;
+  }
   if (!state.rootNode) return;
 
   const rootList = document.createElement("ul");
@@ -1299,7 +1345,11 @@ export function buildPromptContextSection(contextMode, contextEntries, target, l
       return tr(locale, "context.diff.pageNote");
     }
     const entry = contextEntries && contextEntries[0];
-    if (!entry) return tr(locale, "context.diff.none");
+    // Defensive only: `gatherDiffEntries` always resolves to exactly one entry
+    // (never `[]`/`undefined`) for a non-"page" diff target, so this branch is
+    // unreachable in production. Reuse the clean-tree wording rather than a
+    // second near-identical "no diff" string.
+    if (!entry) return tr(locale, "diff.status.clean");
     if (!entry.isDiff) return entry.content;
     const fence = markdownFenceFor(entry.content);
     return `${heading}\n\n${tr(locale, "context.gitDiffHeading")}\n\n${fence}diff\n${entry.content}\n${fence}\n`;
@@ -2003,7 +2053,11 @@ export async function fetchFileContents(paths) {
     paths.map(async (path) => {
       const response = await fetch(apiUrl(`/api/file?path=${encodeURIComponent(path)}`));
       if (!response.ok) {
-        throw new Error(`failed to load "${path}": HTTP ${response.status}`);
+        // Technical detail only (path + HTTP status): the user-facing
+        // "copy failed" prefix is localized by `toast.copyFailed` /
+        // `file.loadFailed` at the display site (issue #22), so this message
+        // must not carry its own English prose or it would leak past them.
+        throw new Error(`"${path}": HTTP ${response.status}`);
       }
       const content = await response.text();
       return { path, content };
@@ -2528,7 +2582,14 @@ async function resolveFileContents(paths) {
         const [entry] = await fetchFileContents([path]);
         return entry;
       } catch (err) {
-        return { path, content: `(failed to load: ${err && err.message ? err.message : err})` };
+        // Reuse the same localized placeholder the single-file open path uses
+        // (issue #22), so a failed embed never leaks an English literal into
+        // the generated prompt. The technical detail (path/HTTP, from
+        // `fetchFileContents`) stays as-is in `{err}`.
+        return {
+          path,
+          content: tr(getLocale(), "file.loadFailed", { err: err && err.message ? err.message : err }),
+        };
       }
     })
   );
@@ -2574,33 +2635,47 @@ async function gatherFullFileEntries(paths) {
  * repository, a clean working tree, or the request itself failing -- which
  * must NOT be wrapped in a diff-language code fence the way real diff text
  * is, or a plain sentence would visually read as malformed diff output. */
+/** Pure `/api/diff` response -> `{ content, isDiff }` resolver, split out of
+ * `gatherDiffEntries` so the localized status prose (issue #22) is testable
+ * without a network round trip. `data` is the parsed response (`{ isGitRepo,
+ * diff }`); `locale` selects the language of the plain-text status lines. Real
+ * diff text (`isDiff: true`) is returned verbatim -- it is not translatable and
+ * gets rendered inside a `diff`-tagged code fence by `buildPromptContextSection`
+ * -- while the "not a repo"/"clean tree" cases become localized prose
+ * (`isDiff: false`) that must NOT be fenced. Fetch/HTTP failures are handled by
+ * `gatherDiffEntries` itself, since they aren't derivable from `data`. */
+export function describeGitDiff(data, locale = "en") {
+  if (!data.isGitRepo) {
+    return { content: tr(locale, "diff.status.notRepo"), isDiff: false };
+  }
+  if (!data.diff) {
+    return { content: tr(locale, "diff.status.clean"), isDiff: false };
+  }
+  return { content: data.diff, isDiff: true };
+}
+
 async function gatherDiffEntries() {
+  const locale = getLocale();
   try {
     const response = await fetch(apiUrl("/api/diff"));
     if (!response.ok) {
       return [
-        { ref: "@diff", content: `(failed to load the Git diff: HTTP ${response.status})`, isDiff: false },
-      ];
-    }
-    const data = await response.json();
-    if (!data.isGitRepo) {
-      return [
         {
           ref: "@diff",
-          content: "(This directory is not a Git repository, so there is no diff to show.)",
+          content: tr(locale, "diff.status.loadFailed", { detail: `HTTP ${response.status}` }),
           isDiff: false,
         },
       ];
     }
-    if (!data.diff) {
-      return [{ ref: "@diff", content: "(No local changes: the working tree is clean.)", isDiff: false }];
-    }
-    return [{ ref: "@diff", content: data.diff, isDiff: true }];
+    const { content, isDiff } = describeGitDiff(await response.json(), locale);
+    return [{ ref: "@diff", content, isDiff }];
   } catch (err) {
     return [
       {
         ref: "@diff",
-        content: `(failed to load the Git diff: ${err && err.message ? err.message : err})`,
+        content: tr(locale, "diff.status.loadFailed", {
+          detail: err && err.message ? err.message : String(err),
+        }),
         isDiff: false,
       },
     ];
@@ -2723,6 +2798,7 @@ function renderAll() {
   updatePromptFilenameVisibility();
   updateComposerToggleAria();
   renderTree();
+  renderRootBasename();
   renderRecentList();
   renderContentToolbar();
   renderFilePanels();
