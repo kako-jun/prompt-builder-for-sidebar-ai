@@ -212,6 +212,7 @@ const MESSAGES = {
     "toast.copied": "Copied to clipboard.",
     "toast.copyFailed": "Copy failed: {error}",
     "toast.unknownError": "unknown error",
+    "clipboard.unavailable": "Clipboard API is not available in this browser.",
   },
   ja: {
     // Generated prompt -- goal instructions
@@ -371,6 +372,7 @@ const MESSAGES = {
     "toast.copied": "クリップボードにコピーしました。",
     "toast.copyFailed": "コピー失敗: {error}",
     "toast.unknownError": "不明なエラー",
+    "clipboard.unavailable": "このブラウザではクリップボードAPIを利用できません。",
   },
 };
 
@@ -464,11 +466,23 @@ const state = {
   // selection). Tracked per path so selections in different open files never
   // cross-contaminate each other's "last clicked line".
   lineSelections: new Map(),
+  // The exact text the last `generatePrompt()` wrote into the result
+  // textarea, and whether one has ever been generated. Used on a locale
+  // switch to decide whether the generated prompt is still pristine (safe to
+  // regenerate in the new language) or has been hand-edited (must not be
+  // clobbered).
+  lastGeneratedPrompt: "",
+  promptGenerated: false,
 };
 
 let el = {};
 
 async function init() {
+  wireLocaleSwitcher();
+  applyStaticI18n();
+  document.documentElement.lang = getLocale();
+  syncLocaleControl();
+  el.rootBasename.textContent = t("root.loading");
   wirePresetButtons();
   wireSearchInput();
   wireRecentClear();
@@ -476,6 +490,7 @@ async function init() {
   wireHashNavigation();
   wireCopyMenuDismissal();
   wirePromptComposer();
+  updateComposerToggleAria();
   renderRecentList();
   renderContentToolbar();
   await Promise.all([loadRoot(), loadTree()]);
@@ -494,14 +509,14 @@ async function loadRoot() {
   try {
     const response = await fetch(apiUrl("/api/root"));
     if (!response.ok) {
-      el.rootBasename.textContent = `(failed to load root: HTTP ${response.status})`;
+      el.rootBasename.textContent = t("root.loadFailedHttp", { status: response.status });
       return;
     }
     const data = await response.json();
     el.rootBasename.textContent = data.basename;
     el.rootPath.textContent = data.absolutePath;
   } catch (err) {
-    el.rootBasename.textContent = "(failed to load root)";
+    el.rootBasename.textContent = t("root.loadFailed");
   }
 }
 
@@ -509,7 +524,7 @@ async function loadTree() {
   try {
     const response = await fetch(apiUrl("/api/tree"));
     if (!response.ok) {
-      el.treeRoot.textContent = `Failed to load the file tree (HTTP ${response.status}).`;
+      el.treeRoot.textContent = t("tree.loadFailedHttp", { status: response.status });
       return;
     }
     const data = await response.json();
@@ -520,7 +535,7 @@ async function loadTree() {
     // walk short, so an incomplete list never silently looks complete.
     el.treeTruncationWarning.hidden = !data.truncated;
   } catch (err) {
-    el.treeRoot.textContent = "Failed to load the file tree.";
+    el.treeRoot.textContent = t("tree.loadFailed");
   }
 }
 
@@ -645,7 +660,7 @@ function renderNode(node) {
     toggle.className = "tree-toggle";
     toggle.textContent = expanded ? "▾" : "▸";
     toggle.setAttribute("aria-expanded", String(expanded));
-    toggle.setAttribute("aria-label", expanded ? "Collapse directory" : "Expand directory");
+    toggle.setAttribute("aria-label", expanded ? t("tree.collapseDir") : t("tree.expandDir"));
     toggle.addEventListener("click", () => toggleDir(node.path));
     row.appendChild(toggle);
   } else {
@@ -685,10 +700,10 @@ function renderNode(node) {
     copyButton.type = "button";
     copyButton.className = "tree-dir-copy";
     copyButton.textContent = "⧉";
-    copyButton.title = "Copy all files in this directory (Markdown)";
+    copyButton.title = t("tree.dirCopyTitle");
     copyButton.setAttribute(
       "aria-label",
-      `Copy all files under ${node.path || "the project root"}`
+      t("tree.dirCopyAria", { path: node.path || t("tree.rootName") })
     );
     copyButton.addEventListener("click", (event) => {
       event.stopPropagation();
@@ -700,8 +715,8 @@ function renderNode(node) {
   if (!node.isDir && node.likelySecret) {
     const badge = document.createElement("span");
     badge.className = "secret-badge";
-    badge.textContent = "⚠ secret?";
-    badge.title = "This file's name looks like it may contain secrets.";
+    badge.textContent = t("tree.secretBadge");
+    badge.title = t("tree.secretTitle");
     row.appendChild(badge);
   }
 
@@ -1165,36 +1180,36 @@ export function sliceSelectedLines(content, start, end) {
 // `state` and calls these.
 
 export const PROMPT_GOALS = [
-  { value: "locate", label: "Find relevant code" },
-  { value: "explain", label: "Explain code" },
-  { value: "investigate-bug", label: "Investigate a bug or its impact" },
-  { value: "review", label: "Review design or security" },
-  { value: "extract-tests", label: "Extract test cases" },
-  { value: "refactor", label: "Suggest refactoring" },
-  { value: "plan", label: "Plan implementation" },
+  { value: "locate", labelKey: "goal.locate.label" },
+  { value: "explain", labelKey: "goal.explain.label" },
+  { value: "investigate-bug", labelKey: "goal.investigate-bug.label" },
+  { value: "review", labelKey: "goal.review.label" },
+  { value: "extract-tests", labelKey: "goal.extract-tests.label" },
+  { value: "refactor", labelKey: "goal.refactor.label" },
+  { value: "plan", labelKey: "goal.plan.label" },
 ];
 
 export const PROMPT_TARGETS = [
-  { value: "page", label: "Whole page" },
-  { value: "checked", label: "Checked files" },
-  { value: "lines", label: "Selected lines" },
-  { value: "diff", label: "Git diff" },
+  { value: "page", labelKey: "target.page.label" },
+  { value: "checked", labelKey: "target.checked.label" },
+  { value: "lines", labelKey: "target.lines.label" },
+  { value: "diff", labelKey: "target.diff.label" },
 ];
 
 export const PROMPT_OUTPUTS = [
-  { value: "concise", label: "Concise answer" },
-  { value: "report", label: "Investigation report" },
-  { value: "issue", label: "GitHub issue" },
-  { value: "instructions", label: "Implementation instructions" },
-  { value: "checklist", label: "Checklist" },
-  { value: "diff", label: "Unified diff" },
-  { value: "file", label: "Downloadable file" },
+  { value: "concise", labelKey: "output.concise.label" },
+  { value: "report", labelKey: "output.report.label" },
+  { value: "issue", labelKey: "output.issue.label" },
+  { value: "instructions", labelKey: "output.instructions.label" },
+  { value: "checklist", labelKey: "output.checklist.label" },
+  { value: "diff", labelKey: "output.diff.label" },
+  { value: "file", labelKey: "output.file.label" },
 ];
 
 export const PROMPT_CONTEXT_MODES = [
-  { value: "page", label: "Page context only" },
-  { value: "excerpts", label: "Referenced excerpts" },
-  { value: "full", label: "Full selected files" },
+  { value: "page", labelKey: "contextMode.page.label" },
+  { value: "excerpts", labelKey: "contextMode.excerpts.label" },
+  { value: "full", labelKey: "contextMode.full.label" },
 ];
 
 /** Describes what `target` refers to, in a form that reads naturally inside
@@ -1529,13 +1544,13 @@ async function openFile(path) {
   try {
     const response = await fetch(apiUrl(`/api/file?path=${encodeURIComponent(path)}`));
     if (!response.ok) {
-      state.fileContentCache.set(path, `(failed to load: HTTP ${response.status})`);
+      state.fileContentCache.set(path, t("file.loadFailedHttp", { status: response.status }));
     } else {
       const text = await response.text();
       state.fileContentCache.set(path, text);
     }
   } catch (err) {
-    state.fileContentCache.set(path, `(failed to load: ${err})`);
+    state.fileContentCache.set(path, t("file.loadFailed", { err }));
   }
 
   renderFilePanels();
@@ -1574,7 +1589,7 @@ function buildFilePanel(path) {
   toggle.className = "file-panel-toggle";
   toggle.textContent = collapsed ? "▸" : "▾";
   toggle.setAttribute("aria-expanded", String(!collapsed));
-  toggle.setAttribute("aria-label", collapsed ? "Expand file panel" : "Collapse file panel");
+  toggle.setAttribute("aria-label", collapsed ? t("filePanel.expand") : t("filePanel.collapse"));
   toggle.addEventListener("click", () => {
     if (state.collapsedPanels.has(path)) {
       state.collapsedPanels.delete(path);
@@ -1608,7 +1623,7 @@ function buildFilePanel(path) {
   actions.className = "file-panel-actions";
   actions.appendChild(
     buildCopyActionGroup(
-      "Copy",
+      t("copy.copy"),
       (button) => copyFileAs(path, "markdown", button),
       () => filePanelCopyMenuItems(path)
     )
@@ -1624,7 +1639,7 @@ function buildFilePanel(path) {
     code.className = "file-panel-code";
 
     if (!state.fileContentCache.has(path)) {
-      code.textContent = "Loading…";
+      code.textContent = t("file.loading");
     } else {
       buildCodeLines(code, path, state.fileContentCache.get(path));
     }
@@ -1887,7 +1902,7 @@ export async function copyTextToClipboard(text) {
     !navigator.clipboard ||
     typeof navigator.clipboard.writeText !== "function"
   ) {
-    return { ok: false, error: "Clipboard API is not available in this browser." };
+    return { ok: false, error: t("clipboard.unavailable") };
   }
 
   try {
@@ -1912,7 +1927,9 @@ let copyToastTimeoutId = null;
  * on-button cue uses. */
 function showCopyToast(ok, error) {
   if (!el.copyToast) return;
-  el.copyToast.textContent = ok ? "Copied to clipboard." : `Copy failed: ${error || "unknown error"}`;
+  el.copyToast.textContent = ok
+    ? t("toast.copied")
+    : t("toast.copyFailed", { error: error || t("toast.unknownError") });
   el.copyToast.classList.toggle("copy-toast-success", ok);
   el.copyToast.classList.toggle("copy-toast-failure", !ok);
   el.copyToast.hidden = false;
@@ -1947,10 +1964,10 @@ function flashCopyFeedback(button, ok, error) {
   const originalLabel = button.dataset.copyOriginalLabel ?? button.textContent;
   button.dataset.copyOriginalLabel = originalLabel;
 
-  button.textContent = ok ? "Copied!" : "Copy failed";
+  button.textContent = ok ? t("copy.copied") : t("copy.failed");
   button.classList.toggle("copy-success", ok);
   button.classList.toggle("copy-failure", !ok);
-  button.title = ok ? "" : error || "Copy failed";
+  button.title = ok ? "" : error || t("copy.failed");
   button.disabled = true;
 
   window.setTimeout(() => {
@@ -2060,7 +2077,7 @@ function buildCopyActionGroup(primaryLabel, onPrimary, getMenuItems) {
   menuButton.type = "button";
   menuButton.className = "copy-menu-toggle";
   menuButton.textContent = "⋯";
-  menuButton.setAttribute("aria-label", "More copy options");
+  menuButton.setAttribute("aria-label", t("copy.moreOptions"));
   menuButton.setAttribute("aria-expanded", "false");
   wrap.appendChild(menuButton);
 
@@ -2134,19 +2151,19 @@ async function copyReferenceWithCode(path, selection, button) {
  * `path` has an active line selection -- a reference-plus-code copy. */
 function filePanelCopyMenuItems(path) {
   const items = ["plain", "xml", "diff"].map((format) => ({
-    label: `Copy file as ${formatLabel(format)}`,
+    label: t("menu.copyFileAs", { format: formatLabel(format) }),
     onClick: (button) => copyFileAs(path, format, button),
   }));
 
   items.push({
-    label: "Copy reference only",
+    label: t("menu.copyReferenceOnly"),
     onClick: (button) => copyToClipboardWithFeedback(formatFileRef(path), button),
   });
 
   const selection = state.lineSelections.get(path);
   if (selection) {
     items.push({
-      label: "Copy reference + code",
+      label: t("menu.copyReferenceAndCode"),
       onClick: (button) => copyReferenceWithCode(path, selection, button),
     });
   }
@@ -2208,13 +2225,13 @@ function globalCopyMenuItems() {
   const hasChecked = state.checked.size > 0;
 
   const items = ["plain", "xml", "diff"].map((format) => ({
-    label: `Copy all checked as ${formatLabel(format)}`,
+    label: t("menu.copyAllCheckedAs", { format: formatLabel(format) }),
     disabled: !hasChecked,
     onClick: (button) => copyAllChecked(format, button),
   }));
 
   items.push({
-    label: "Copy file tree",
+    label: t("menu.copyFileTree"),
     onClick: (button) => copyFileTree(button),
   });
 
@@ -2231,19 +2248,20 @@ function globalCopyMenuItems() {
  * toolbar has no other hook into. */
 function renderContentToolbar() {
   const count = state.openFiles.length;
-  el.contentToolbarCount.textContent = count === 1 ? "1 file open" : `${count} files open`;
+  el.contentToolbarCount.textContent =
+    count === 1 ? t("toolbar.oneFileOpen") : t("toolbar.manyFilesOpen", { count });
 
   // Order doesn't matter for computeSelectionStats's sums, so skip the sort
   // this function's other Array.from(state.checked) call sites need for
   // deterministic output ordering -- this one has no such requirement, and
   // this function runs on every single file-panel render.
   const stats = computeSelectionStats(Array.from(state.checked), state.fileContentCache);
-  el.contentToolbarStats.textContent = formatSelectionStats(stats);
+  el.contentToolbarStats.textContent = formatSelectionStats(stats, getLocale());
   el.contentToolbarStats.classList.toggle("content-toolbar-stats-warning", stats.isLarge);
 
   el.contentToolbarActions.innerHTML = "";
   const group = buildCopyActionGroup(
-    "Copy all checked",
+    t("toolbar.copyAllChecked"),
     (button) => copyAllChecked("markdown", button),
     globalCopyMenuItems
   );
@@ -2311,7 +2329,7 @@ function renderRecentList() {
   if (list.length === 0) {
     const li = document.createElement("li");
     li.className = "recent-empty";
-    li.textContent = "No recently opened files yet.";
+    li.textContent = t("recent.empty");
     el.recentList.appendChild(li);
     return;
   }
@@ -2332,7 +2350,7 @@ function renderRecentList() {
     removeButton.type = "button";
     removeButton.className = "recent-remove";
     removeButton.textContent = "✕";
-    removeButton.setAttribute("aria-label", `Remove ${path} from recently opened`);
+    removeButton.setAttribute("aria-label", t("recent.removeAria", { path }));
     removeButton.addEventListener("click", () => removeFromRecent(path));
     li.appendChild(removeButton);
 
@@ -2414,7 +2432,25 @@ export function clamp(value, min, max) {
 // prompt" is clicked again (issue #7 acceptance criterion).
 
 function populateSelect(select, options) {
-  select.append(...options.map((option) => new Option(option.label, option.value)));
+  select.append(...options.map((option) => new Option(t(option.labelKey), option.value)));
+}
+
+/** Clears and re-fills every composer `<select>` with the current locale's
+ * option labels, preserving each select's currently chosen value (the option
+ * `value`s never change between locales, only their display labels). */
+function repopulatePromptSelects() {
+  const selects = [
+    [el.promptGoal, PROMPT_GOALS],
+    [el.promptTarget, PROMPT_TARGETS],
+    [el.promptOutput, PROMPT_OUTPUTS],
+    [el.promptContextMode, PROMPT_CONTEXT_MODES],
+  ];
+  for (const [select, options] of selects) {
+    const current = select.value;
+    select.innerHTML = "";
+    populateSelect(select, options);
+    if (options.some((option) => option.value === current)) select.value = current;
+  }
 }
 
 function wirePromptComposer() {
@@ -2452,11 +2488,19 @@ function wirePromptComposer() {
     el.promptComposerBody.hidden = !collapsed;
     el.promptComposerToggle.textContent = collapsed ? "▾" : "▸";
     el.promptComposerToggle.setAttribute("aria-expanded", String(collapsed));
-    el.promptComposerToggle.setAttribute(
-      "aria-label",
-      collapsed ? "Collapse prompt composer" : "Expand prompt composer"
-    );
+    updateComposerToggleAria();
   });
+}
+
+/** Sets the composer toggle's `aria-label` from its current expanded/collapsed
+ * state in the active locale. Kept separate from the click handler so a locale
+ * switch can refresh the label without toggling the panel. */
+function updateComposerToggleAria() {
+  const expanded = !el.promptComposerBody.hidden;
+  el.promptComposerToggle.setAttribute(
+    "aria-label",
+    expanded ? t("promptComposer.collapse") : t("promptComposer.expand")
+  );
 }
 
 function updatePromptFilenameVisibility() {
@@ -2599,21 +2643,95 @@ async function generatePrompt() {
     contextEntries = await gatherFullFileEntries(checkedPaths);
   }
 
-  el.promptResult.value = buildPromptText({
-    goal,
-    target,
-    output,
-    contextMode,
-    filename,
-    extraInstructions,
-    checkedRefs,
-    lineRefs,
-    contextEntries,
+  const text = buildPromptText(
+    {
+      goal,
+      target,
+      output,
+      contextMode,
+      filename,
+      extraInstructions,
+      checkedRefs,
+      lineRefs,
+      contextEntries,
+    },
+    getLocale()
+  );
+  el.promptResult.value = text;
+  state.lastGeneratedPrompt = text;
+  state.promptGenerated = true;
+}
+
+// ---- Language switching (issue #22) ----
+//
+// One active locale drives both the static chrome (filled from `data-i18n*`
+// attributes in the HTML) and every JS-rendered label. Switching languages
+// re-applies both, re-populates the composer's `<select>` option labels, and
+// -- only if the generated prompt is still exactly what the last
+// `generatePrompt()` produced (i.e. not hand-edited) -- regenerates it in the
+// new language so a user's manual edits are never silently clobbered.
+
+/** Walks the `data-i18n` family of attributes on `root` and fills each
+ * element's text / placeholder / aria-label / title from the active locale.
+ * Idempotent, so it's safe to call on every locale switch. */
+function applyStaticI18n(root = document) {
+  root.querySelectorAll("[data-i18n]").forEach((node) => {
+    node.textContent = t(node.dataset.i18n);
   });
+  root.querySelectorAll("[data-i18n-placeholder]").forEach((node) => {
+    node.setAttribute("placeholder", t(node.dataset.i18nPlaceholder));
+  });
+  root.querySelectorAll("[data-i18n-aria]").forEach((node) => {
+    node.setAttribute("aria-label", t(node.dataset.i18nAria));
+  });
+  root.querySelectorAll("[data-i18n-title]").forEach((node) => {
+    node.setAttribute("title", t(node.dataset.i18nTitle));
+  });
+}
+
+function wireLocaleSwitcher() {
+  if (!el.localeSelect) return;
+  el.localeSelect.addEventListener("change", () => setLocale(el.localeSelect.value));
+}
+
+/** Reflects the active locale onto the switcher control (so a stored/auto
+ * choice shows as selected on load, and a programmatic switch stays in sync). */
+function syncLocaleControl() {
+  if (el.localeSelect) el.localeSelect.value = getLocale();
+}
+
+/** If a prompt was previously generated and hasn't been hand-edited since,
+ * regenerates it in the current locale; otherwise leaves the textarea alone so
+ * manual edits (or an intentionally blank result) survive the language switch. */
+function regeneratePromptIfUnedited() {
+  if (state.promptGenerated && el.promptResult.value === state.lastGeneratedPrompt) {
+    // Fire-and-forget: generatePrompt is async (it may fetch embed content),
+    // and it writes the textarea itself when it resolves.
+    generatePrompt();
+  }
+}
+
+/** Re-renders every locale-dependent surface after the active locale changes:
+ * static chrome, the composer selects, all dynamically built lists/panels, and
+ * (when safe) the generated prompt. */
+function renderAll() {
+  if (typeof document === "undefined") return;
+  document.documentElement.lang = getLocale();
+  applyStaticI18n();
+  syncLocaleControl();
+  repopulatePromptSelects();
+  updatePromptFilenameVisibility();
+  updateComposerToggleAria();
+  renderTree();
+  renderRecentList();
+  renderContentToolbar();
+  renderFilePanels();
+  regeneratePromptIfUnedited();
 }
 
 if (typeof document !== "undefined") {
   el = {
+    localeSelect: document.getElementById("locale-select"),
     rootBasename: document.getElementById("root-basename"),
     rootPath: document.getElementById("root-path"),
     treeRoot: document.getElementById("tree-root"),

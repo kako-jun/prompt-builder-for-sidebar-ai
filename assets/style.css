@@ -87,6 +87,36 @@ button {
   padding: 0.75rem;
 }
 
+/* Language toggle (issue #22): a compact EN / 日本語 switcher pinned above the
+   root info at the top of the explorer pane. */
+.locale-switcher {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.4rem;
+  font-size: 0.75rem;
+  color: var(--text-dim);
+}
+
+.locale-switcher-label {
+  white-space: nowrap;
+}
+
+.locale-select {
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 4px;
+  padding: 0.2rem 0.4rem;
+  font: inherit;
+  font-size: 0.75rem;
+}
+
+.locale-select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
 .root-info {
   padding-bottom: 0.5rem;
   border-bottom: 1px solid var(--border);

@@ -15,7 +15,7 @@
       every load rather than being something a user mutes once and then
       never sees again. See THREAT_MODEL.md for the full rationale.
     -->
-    <div id="security-notice" class="security-notice" role="note">
+    <div id="security-notice" class="security-notice" role="note" data-i18n="security.notice">
       ⚠ Anything you copy from this page may be pasted into a third-party AI
       assistant. File content can contain instructions written to manipulate
       that AI ("prompt injection") -- review what you're about to share
@@ -23,43 +23,54 @@
     </div>
     <div id="app" class="app">
       <aside id="explorer-pane" class="explorer-pane">
+        <div class="locale-switcher">
+          <label for="locale-select" class="locale-switcher-label" data-i18n="locale.label"
+            >Language</label
+          >
+          <select id="locale-select" class="locale-select">
+            <option value="en">English</option>
+            <option value="ja">日本語</option>
+          </select>
+        </div>
+
         <div class="root-info">
           <h1 id="root-basename" class="root-basename">Loading…</h1>
           <p id="root-path" class="root-path"></p>
         </div>
 
-        <div class="presets" role="group" aria-label="Selection presets">
-          <button type="button" class="preset-button" data-preset="all-text">All text files</button>
-          <button type="button" class="preset-button" data-preset="source">Source only</button>
-          <button type="button" class="preset-button" data-preset="docs">Docs only</button>
-          <button type="button" class="preset-button preset-button-clear" data-preset="clear">Clear selection</button>
+        <div class="presets" role="group" data-i18n-aria="preset.groupLabel" aria-label="Selection presets">
+          <button type="button" class="preset-button" data-preset="all-text" data-i18n="preset.allText">All text files</button>
+          <button type="button" class="preset-button" data-preset="source" data-i18n="preset.sourceOnly">Source only</button>
+          <button type="button" class="preset-button" data-preset="docs" data-i18n="preset.docsOnly">Docs only</button>
+          <button type="button" class="preset-button preset-button-clear" data-preset="clear" data-i18n="preset.clearSelection">Clear selection</button>
         </div>
 
         <div class="search">
-          <label for="search-input" class="visually-hidden">Filter files by path</label>
+          <label for="search-input" class="visually-hidden" data-i18n="search.label">Filter files by path</label>
           <input
             id="search-input"
             type="search"
             class="search-input"
             placeholder="Filter by path…"
+            data-i18n-placeholder="search.placeholder"
             autocomplete="off"
             spellcheck="false"
           />
         </div>
 
-        <section class="recent" aria-label="Recently opened files">
+        <section class="recent" data-i18n-aria="recent.sectionLabel" aria-label="Recently opened files">
           <div class="recent-header">
-            <h2 class="recent-title">Recently opened</h2>
-            <button type="button" id="recent-clear" class="recent-clear-button">Clear</button>
+            <h2 class="recent-title" data-i18n="recent.title">Recently opened</h2>
+            <button type="button" id="recent-clear" class="recent-clear-button" data-i18n="recent.clear">Clear</button>
           </div>
           <ul id="recent-list" class="recent-list"></ul>
         </section>
 
-        <p id="tree-truncation-warning" class="tree-truncation-warning" hidden>
+        <p id="tree-truncation-warning" class="tree-truncation-warning" data-i18n="tree.truncationWarning" hidden>
           ⚠ This project has more files than can be shown at once; the list
           below is incomplete.
         </p>
-        <nav id="tree-root" class="tree" aria-label="File explorer"></nav>
+        <nav id="tree-root" class="tree" data-i18n-aria="tree.explorerLabel" aria-label="File explorer"></nav>
       </aside>
 
       <div
@@ -67,14 +78,15 @@
         class="resizer"
         role="separator"
         aria-orientation="vertical"
+        data-i18n-aria="resizer.label"
         aria-label="Resize explorer pane"
         tabindex="0"
       ></div>
 
       <main id="content-pane" class="content-pane">
-        <section id="prompt-composer" class="prompt-composer" aria-label="Prompt composer">
+        <section id="prompt-composer" class="prompt-composer" data-i18n-aria="promptComposer.ariaLabel" aria-label="Prompt composer">
           <div class="prompt-composer-header">
-            <h2 class="prompt-composer-title">Prompt composer</h2>
+            <h2 class="prompt-composer-title" data-i18n="promptComposer.title">Prompt composer</h2>
             <button
               type="button"
               id="prompt-composer-toggle"
@@ -86,54 +98,56 @@
           <div id="prompt-composer-body" class="prompt-composer-body">
             <div class="prompt-composer-fields">
               <label class="prompt-field">
-                <span>Goal</span>
+                <span data-i18n="composer.goal">Goal</span>
                 <select id="prompt-goal"></select>
               </label>
               <label class="prompt-field">
-                <span>Target</span>
+                <span data-i18n="composer.target">Target</span>
                 <select id="prompt-target"></select>
               </label>
               <label class="prompt-field">
-                <span>Output</span>
+                <span data-i18n="composer.output">Output</span>
                 <select id="prompt-output"></select>
               </label>
               <label id="prompt-filename-field" class="prompt-field" hidden>
-                <span>Filename</span>
+                <span data-i18n="composer.filename">Filename</span>
                 <input
                   id="prompt-filename"
                   type="text"
                   placeholder="e.g. test-spec.md"
+                  data-i18n-placeholder="composer.filenamePlaceholder"
                   autocomplete="off"
                   spellcheck="false"
                 />
               </label>
               <label class="prompt-field">
-                <span>Context mode</span>
+                <span data-i18n="composer.contextMode">Context mode</span>
                 <select id="prompt-context-mode"></select>
               </label>
             </div>
 
             <label class="prompt-field prompt-field-wide">
-              <span>Additional instructions (optional)</span>
+              <span data-i18n="composer.extra">Additional instructions (optional)</span>
               <textarea id="prompt-extra" rows="2"></textarea>
             </label>
 
             <div class="prompt-composer-actions">
-              <button type="button" id="prompt-generate" class="prompt-generate-button">
+              <button type="button" id="prompt-generate" class="prompt-generate-button" data-i18n="composer.generate">
                 Generate prompt
               </button>
-              <button type="button" id="prompt-copy" class="copy-button copy-button-primary">
+              <button type="button" id="prompt-copy" class="copy-button copy-button-primary" data-i18n="composer.copy">
                 Copy prompt
               </button>
             </div>
 
             <label class="prompt-field prompt-field-wide">
-              <span>Generated prompt (editable)</span>
+              <span data-i18n="composer.result">Generated prompt (editable)</span>
               <textarea
                 id="prompt-result"
                 class="prompt-result"
                 rows="10"
                 placeholder="Choose options above and click “Generate prompt”."
+                data-i18n-placeholder="composer.resultPlaceholder"
               ></textarea>
             </label>
           </div>
@@ -146,7 +160,7 @@
           </div>
           <div id="content-toolbar-actions" class="content-toolbar-actions"></div>
         </div>
-        <p id="content-empty-hint" class="empty-hint">
+        <p id="content-empty-hint" class="empty-hint" data-i18n="content.emptyHint">
           Select files in the explorer to see their contents here.
         </p>
         <div id="file-panels" class="file-panels"></div>
