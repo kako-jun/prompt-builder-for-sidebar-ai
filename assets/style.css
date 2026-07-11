@@ -271,24 +271,35 @@ button {
 
 .recent-title {
   margin: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
   font-size: 0.8rem;
+  font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: var(--text-dim);
 }
 
+.recent-title-icon {
+  width: 0.75rem;
+  height: 0.75rem;
+  flex-shrink: 0;
+}
+
 .recent-clear-button {
   background: none;
-  border: none;
+  border: 1px dashed var(--border);
+  border-radius: 999px;
   color: var(--text-dim);
   cursor: pointer;
-  font-size: 0.75rem;
-  text-decoration: underline;
-  padding: 0;
+  font-size: 0.72rem;
+  padding: 0.15rem 0.55rem;
 }
 
 .recent-clear-button:hover {
-  color: var(--text);
+  border-color: var(--danger);
+  color: var(--danger);
 }
 
 .recent-list {
@@ -312,25 +323,51 @@ button {
   display: flex;
   align-items: center;
   gap: 0.3rem;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 0 0.15rem;
+}
+
+.recent-item:hover {
+  border-color: var(--border);
+  background: var(--bg-panel-alt);
 }
 
 .recent-reopen {
   flex: 1;
   min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
   text-align: left;
   background: none;
   border: none;
   color: var(--text);
   cursor: pointer;
   font-size: 0.78rem;
+  padding: 0.15rem 0;
+}
+
+.recent-reopen-icon {
+  width: 0.7rem;
+  height: 0.7rem;
+  flex-shrink: 0;
+  color: var(--text-dim);
+}
+
+.recent-reopen-label {
+  min-width: 0;
   font-family: var(--font-mono);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  padding: 0.1rem 0;
 }
 
 .recent-reopen:hover {
+  color: var(--accent);
+}
+
+.recent-reopen:hover .recent-reopen-icon {
   color: var(--accent);
 }
 
