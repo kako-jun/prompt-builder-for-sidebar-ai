@@ -58,9 +58,10 @@ after Ctrl+C.
 
 ## Documentation
 
-- [docs/EXPLORER_UI.md](docs/EXPLORER_UI.md) -- the two-pane explorer, line
-  numbers and stable `@file`/`@dir`/`@lines` references, copy actions and
-  output formats, the prompt composer, and selection size statistics.
+- [docs/EXPLORER_UI.md](docs/EXPLORER_UI.md) -- the two-pane explorer, the
+  English/Japanese language toggle, line numbers and stable
+  `@file`/`@dir`/`@lines` references, copy actions and output formats, the
+  prompt composer, and selection size statistics.
 - [docs/API.md](docs/API.md) -- the `/api/root`, `/api/tree`, `/api/file`,
   and `/api/diff` endpoints, what's excluded from the tree, how likely-secret
   files are flagged, and known limitations.
