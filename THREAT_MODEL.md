@@ -64,6 +64,7 @@ to an AI API itself and never writes to the served directory.
 | A non-regular file (FIFO, device, socket) is opened and blocks the request forever (e.g. a FIFO with no writer). | Never opened at all: both `discover_tree` and `resolve_regular_file` check the file type first and skip/refuse anything that isn't a regular file or directory. |
 | Prompt injection: a file's content contains text written to manipulate whatever AI later reads the copied prompt. | **Not preventable by this tool** -- there is no reliable way to distinguish "legitimate file content" from "content crafted to look like an instruction" from outside the AI itself. Disclosed instead: a persistent on-page notice (see `assets/index.html`'s `#security-notice`) and this document. |
 | Copied content is sent to a third-party AI provider the user didn't fully consider (privacy). | **The user's judgment, not this tool's to enforce** -- disclosed via the same on-page notice and the README's disclaimer. This tool's own job ends at "put correctly-scoped, unambiguously-delimited text on the clipboard." |
+| `ROOT` given as a GitHub URL (issue #14) clones from an unexpected location, or the clone itself is unbounded. | The clone URL is always reconstructed as `https://github.com/{owner}/{repo}.git` from the parsed owner/repo, never the raw input string, so the CLI argument can't inject a different protocol or host at the URL-parsing level. Once on disk, the clone is validated identically to any other local root -- no new logic needed there. **Not mitigated**: `git clone --depth 1` bounds history but not working-tree size, and the clone has no timeout; see "Explicitly out of scope" below. |
 
 ## Explicitly out of scope
 
@@ -78,9 +79,20 @@ to an AI API itself and never writes to the served directory.
 - **Validating what the user chooses to paste where.** Once text is on the
   clipboard, this tool has no further visibility or control.
 - **Exhaustive secret detection.** The `likely_secret` heuristic is a small,
-  hand-picked list of common patterns (see README.md's "Known limitations"),
-  not a secret-scanning product. A project's own `.gitignore` remains the
-  primary defense against exposing files that shouldn't be browsed at all.
+  hand-picked list of common patterns (see [docs/API.md](docs/API.md)'s
+  "Known limitations"), not a secret-scanning product. A project's own
+  `.gitignore` remains the primary defense against exposing files that
+  shouldn't be browsed at all.
+- **Bounding a GitHub-URL clone's size or duration.** `ROOT` given as a
+  `https://github.com/...` URL (issue #14) is shallow-cloned with no disk
+  space cap and no timeout -- a very large public repository or a stalled
+  network connection can consume significant disk space or block startup
+  indefinitely. Only clone a repository whose size you already trust, the
+  same "use at your own risk" posture as everything else this tool does with
+  a path or URL you give it. Separately, resolving `github.com` itself is
+  left entirely to the OS/git configuration; a machine whose DNS or git
+  config has already been tampered with to redirect that hostname is a
+  compromised-machine scenario, already out of scope above.
 
 ## Where the tests live
 
@@ -91,6 +103,9 @@ to an AI API itself and never writes to the served directory.
   (wrong/truncated/extra-segment token, wrong method), the file-size cap.
 - `src/diff.rs` -- the same defenses applied to the Git-diff endpoint's
   untracked-file handling.
+- `src/github_root.rs` -- GitHub URL parsing (rejects unsupported shapes
+  rather than guessing) and the clone-URL is always reconstructed from the
+  parsed owner/repo, never the raw input.
 - `tests/server.rs` -- the same, exercised as real HTTP requests against a
   running server rather than unit-level function calls.
 - `assets/app.test.js` -- output-escaping coverage for the four copy formats

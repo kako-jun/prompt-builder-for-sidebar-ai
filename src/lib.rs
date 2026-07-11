@@ -12,6 +12,7 @@ use uuid::Uuid;
 
 pub mod diff;
 pub mod discovery;
+pub mod github_root;
 
 use diff::compute_diff;
 use discovery::{discover_tree, is_probably_binary, FileEntry};
@@ -39,12 +40,15 @@ fn rendered_index_html() -> &'static str {
     })
 }
 
-/// Resolves and validates the root directory passed on the command line.
+/// Resolves and validates a local root directory.
 ///
 /// The resolved root becomes the security boundary for the session: later
 /// issues must not let the UI navigate above it. Missing paths and paths
 /// that are not directories are rejected with a message suitable for
-/// display on stderr.
+/// display on stderr. For the `ROOT` command-line argument, which may also
+/// be a public GitHub repository URL, use
+/// [`github_root::resolve_root_arg`] instead -- it calls this function
+/// after cloning, if a clone is needed.
 pub fn resolve_root(path: &Path) -> Result<PathBuf, String> {
     let canonical = std::fs::canonicalize(path).map_err(|err| {
         format!(
