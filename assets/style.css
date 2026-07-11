@@ -54,9 +54,10 @@ button {
    near its markup for why that changed): a dismissible disclosure that
    copied content reaches a third-party AI and that opened files are
    untrusted input. Kept slim so it doesn't meaningfully compete with the
-   explorer/content panes for space. `[hidden]` needs no extra override here
-   because this element declares no `display` of its own -- the UA's
-   `[hidden] { display: none }` rule already wins with no specificity fight. */
+   explorer/content panes for space. This element declares its own
+   `display: flex` below, so the UA's `[hidden] { display: none }` loses the
+   specificity fight -- the explicit `.security-notice[hidden]` override
+   further down is required, not redundant. */
 .security-notice {
   display: flex;
   align-items: flex-start;

@@ -2022,6 +2022,8 @@ describe("tr", () => {
     assert.equal(tr("ja", "security.dismiss"), "この通知を閉じる");
     assert.equal(tr("en", "security.reopenLabel"), "Safety");
     assert.equal(tr("ja", "security.reopenLabel"), "安全性");
+    assert.equal(tr("en", "security.reopenAria"), "Show the safety notice");
+    assert.equal(tr("ja", "security.reopenAria"), "安全性の通知を表示");
   });
 
   test("falls back to English for an unsupported locale (its table is missing entirely)", () => {
