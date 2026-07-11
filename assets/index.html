@@ -4,6 +4,14 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>prompt-builder-for-sidebar-ai</title>
+    <!--
+      Favicon inlined as a data URI (the same embedded assets/icon.png used
+      for the explorer-pane logo below). An explicit <link rel="icon"> stops
+      the browser from probing /favicon.ico -- which the token-scoped server
+      would 404 -- so there's no stray console error and no extra request.
+    -->
+    <link rel="icon" type="image/png" href="__ICON_DATA_URI__" />
+    <link rel="apple-touch-icon" href="__ICON_DATA_URI__" />
     <style>
 /*__STYLE_PLACEHOLDER__*/
     </style>
@@ -23,14 +31,30 @@
     </div>
     <div id="app" class="app">
       <aside id="explorer-pane" class="explorer-pane">
-        <div class="locale-switcher">
-          <label for="locale-select" class="locale-switcher-label" data-i18n="locale.label"
-            >Language</label
-          >
-          <select id="locale-select" class="locale-select">
-            <option value="en">English</option>
-            <option value="ja">日本語</option>
-          </select>
+        <!--
+          Brand row (issue #15): the app icon carries the branding since the
+          full name "prompt-builder-for-sidebar-ai" is too long to spell out
+          in the pane; the name lives in the logo's alt/title (hover to see
+          it) instead. The language toggle sits at the right of the same row.
+        -->
+        <div class="brand-row">
+          <img
+            class="app-logo"
+            src="__ICON_DATA_URI__"
+            width="128"
+            height="128"
+            alt="prompt-builder-for-sidebar-ai"
+            title="prompt-builder-for-sidebar-ai"
+          />
+          <div class="locale-switcher">
+            <label for="locale-select" class="locale-switcher-label" data-i18n="locale.label"
+              >Language</label
+            >
+            <select id="locale-select" class="locale-select">
+              <option value="en">English</option>
+              <option value="ja">日本語</option>
+            </select>
+          </div>
         </div>
 
         <div class="root-info">

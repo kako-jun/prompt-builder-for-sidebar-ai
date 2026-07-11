@@ -87,8 +87,32 @@ button {
   padding: 0.75rem;
 }
 
-/* Language toggle (issue #22): a compact EN / 日本語 switcher pinned above the
-   root info at the top of the explorer pane. */
+/* Brand row (issue #15): the top row of the explorer pane, with the app logo
+   on the left and the language toggle on the right. The logo carries the
+   branding (the full app name is too long to spell out here), so no name text
+   is drawn -- it lives in the logo's alt/title instead. */
+.brand-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+/* The app mark, rendered from the embedded icon.png data URI. Shown as a small
+   rounded badge; 128px source scaled down, so it stays crisp. Height set,
+   width auto keeps its square aspect. Reads on any panel background because
+   the icon itself carries its own light/dark contrast (this is a dark-only
+   UI). */
+.app-logo {
+  height: 30px;
+  width: auto;
+  display: block;
+  flex-shrink: 0;
+  border-radius: 6px;
+}
+
+/* Language toggle (issue #22): a compact EN / 日本語 switcher sharing the brand
+   row at the top of the explorer pane (issue #15), pushed to its right edge. */
 .locale-switcher {
   display: flex;
   align-items: center;
