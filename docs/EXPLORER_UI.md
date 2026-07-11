@@ -39,6 +39,30 @@ three additive presets, and stays pushed to the right of the row. The
 row keeps its `data-preset` attributes and `role="group"` grouping; only the
 visual weight changed.
 
+## Recently opened files
+
+The "Recently opened" list sits directly under the quick-select chips and is
+styled as part of the same shortcut family (issue #26) rather than a
+disconnected list: its heading carries a small decorative clock/history
+icon (same inline-SVG, `aria-hidden="true"` pattern as the chip icons), and
+each row gets a small curved-arrow reopen icon before the filename so it's
+visible without trial and error that clicking a name re-selects/reopens that
+file (`✕`, at the end of the row, remains the separate "remove this one
+entry" action). Row borders, hover state, and muted colors reuse the same
+palette tokens as the chips above (`--text-dim`, `--border`, `--accent`,
+`--danger`) so the two sections read as one family while the list keeps its
+original (non-chip) layout, since recent files can be more numerous than the
+four fixed presets.
+
+The section's own clear-all button is labeled "Clear history" / "履歴をクリア"
+-- deliberately distinct from the quick-select row's "Clear selection" /
+"選択をクリア" chip, since the two do different things (wiping the whole
+recent-files history vs. unchecking the current selection) and previously
+shared the ambiguous word "Clear". The section's accessible name now comes
+from `aria-labelledby` pointing at the visible `<h2>` (`id="recent-title"`)
+instead of a separately maintained `aria-label`/`data-i18n-aria` pair, so the
+label text has one source of truth.
+
 ## Language (English / Japanese)
 
 The UI ships in two languages -- English (the source and fallback) and

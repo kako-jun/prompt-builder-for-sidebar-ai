@@ -165,9 +165,8 @@ const MESSAGES = {
     "preset.groupTitle": "Quick select",
     "search.label": "Filter files by path",
     "search.placeholder": "Filter by path…",
-    "recent.sectionLabel": "Recently opened files",
     "recent.title": "Recently opened",
-    "recent.clear": "Clear",
+    "recent.clear": "Clear history",
     "recent.empty": "No recently opened files yet.",
     "recent.removeAria": "Remove {path} from recently opened",
     "tree.truncationWarning":
@@ -327,9 +326,8 @@ const MESSAGES = {
     "preset.groupTitle": "クイック選択",
     "search.label": "パスでファイルを絞り込む",
     "search.placeholder": "パスで絞り込み…",
-    "recent.sectionLabel": "最近開いたファイル",
     "recent.title": "最近開いたファイル",
-    "recent.clear": "クリア",
+    "recent.clear": "履歴をクリア",
     "recent.empty": "最近開いたファイルはまだありません。",
     "recent.removeAria": "{path} を最近開いたファイルから削除",
     "tree.truncationWarning":
@@ -2376,6 +2374,40 @@ function wireRecentClear() {
   el.recentClear.addEventListener("click", clearRecent);
 }
 
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+/** Small decorative icon prefixing each recent-file row's reopen button
+ * (issue #26): a curved re-select arrow, distinct from the `✕` remove
+ * button, so a user can tell at a glance that clicking the name re-selects
+ * the file rather than doing something destructive. Purely decorative --
+ * the row's accessible name still comes from the filename text. */
+function createRecentReopenIcon() {
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("class", "recent-reopen-icon");
+  svg.setAttribute("viewBox", "0 0 16 16");
+  svg.setAttribute("aria-hidden", "true");
+  svg.setAttribute("focusable", "false");
+
+  const path = document.createElementNS(SVG_NS, "path");
+  path.setAttribute("d", "M12.5 5A5 5 0 1 0 13.5 8.5");
+  path.setAttribute("fill", "none");
+  path.setAttribute("stroke", "currentColor");
+  path.setAttribute("stroke-width", "1.2");
+  path.setAttribute("stroke-linecap", "round");
+  svg.appendChild(path);
+
+  const arrowhead = document.createElementNS(SVG_NS, "path");
+  arrowhead.setAttribute("d", "M12.5 2v3.3h-3.3");
+  arrowhead.setAttribute("fill", "none");
+  arrowhead.setAttribute("stroke", "currentColor");
+  arrowhead.setAttribute("stroke-width", "1.2");
+  arrowhead.setAttribute("stroke-linecap", "round");
+  arrowhead.setAttribute("stroke-linejoin", "round");
+  svg.appendChild(arrowhead);
+
+  return svg;
+}
+
 function renderRecentList() {
   const list = loadRecent();
   el.recentList.innerHTML = "";
@@ -2395,8 +2427,12 @@ function renderRecentList() {
     const reopenButton = document.createElement("button");
     reopenButton.type = "button";
     reopenButton.className = "recent-reopen";
-    reopenButton.textContent = path;
     reopenButton.title = path;
+    reopenButton.appendChild(createRecentReopenIcon());
+    const reopenLabel = document.createElement("span");
+    reopenLabel.className = "recent-reopen-label";
+    reopenLabel.textContent = path;
+    reopenButton.appendChild(reopenLabel);
     reopenButton.addEventListener("click", () => reopenFromRecent(path));
     li.appendChild(reopenButton);
 
