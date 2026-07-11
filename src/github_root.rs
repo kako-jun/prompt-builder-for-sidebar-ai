@@ -58,7 +58,8 @@ pub fn parse_github_root_url(input: &str) -> Option<GithubRootUrl> {
 }
 
 /// Why [`clone_github_root`] failed, each mapping to a distinct, clear
-/// user-facing message (see `main.rs`).
+/// user-facing message via its [`std::fmt::Display`] impl.
+#[derive(Debug)]
 pub enum CloneError {
     /// The `git` binary isn't on `PATH` at all.
     GitNotInstalled,
@@ -71,11 +72,35 @@ pub enum CloneError {
     TempDirUnavailable(String),
 }
 
+impl std::fmt::Display for CloneError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CloneError::GitNotInstalled => write!(
+                f,
+                "git is required to clone a GitHub repository URL; install git and try again"
+            ),
+            CloneError::CloneFailed(detail) => write!(
+                f,
+                "failed to clone repository: {detail}\n\
+                 (this can happen for a private repository, a nonexistent repository or ref, \
+                 or a network issue -- only public repositories are supported)"
+            ),
+            CloneError::TempDirUnavailable(detail) => write!(
+                f,
+                "could not create a temporary directory for the clone: {detail}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for CloneError {}
+
 /// Removes its wrapped temporary directory when dropped. Meant to be held as
 /// a local variable in `main` so it's tied to process lifetime: it fires on
 /// every normal exit path, including after Ctrl+C's graceful shutdown (a
 /// plain `return` from `main`, not a `std::process::exit`, so destructors
 /// still run), without any separate signal-handling logic of its own.
+#[derive(Debug)]
 pub struct TempDirGuard(PathBuf);
 
 impl TempDirGuard {
@@ -86,7 +111,12 @@ impl TempDirGuard {
 
 impl Drop for TempDirGuard {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
+        if let Err(err) = std::fs::remove_dir_all(&self.0) {
+            eprintln!(
+                "warning: could not remove temporary clone directory '{}': {err}",
+                self.0.display()
+            );
+        }
     }
 }
 
@@ -96,19 +126,10 @@ impl Drop for TempDirGuard {
 /// clone itself runs, so a failed clone still leaves nothing behind once the
 /// returned error is dropped.
 pub fn clone_github_root(url: &GithubRootUrl) -> Result<TempDirGuard, CloneError> {
-    if Command::new("git").arg("--version").output().is_err() {
-        return Err(CloneError::GitNotInstalled);
-    }
-
-    let unique = format!(
-        "prompt-builder-github-root-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|duration| duration.as_nanos())
-            .unwrap_or(0)
-    );
-    let temp_dir = std::env::temp_dir().join(unique);
+    let temp_dir = std::env::temp_dir().join(format!(
+        "prompt-builder-github-root-{}",
+        uuid::Uuid::new_v4()
+    ));
     std::fs::create_dir_all(&temp_dir)
         .map_err(|err| CloneError::TempDirUnavailable(err.to_string()))?;
     let guard = TempDirGuard(temp_dir.clone());
@@ -122,9 +143,13 @@ pub fn clone_github_root(url: &GithubRootUrl) -> Result<TempDirGuard, CloneError
     }
     command.arg(&clone_url).arg(&temp_dir);
 
-    let output = command
-        .output()
-        .map_err(|err| CloneError::CloneFailed(err.to_string()))?;
+    let output = command.output().map_err(|err| {
+        if err.kind() == std::io::ErrorKind::NotFound {
+            CloneError::GitNotInstalled
+        } else {
+            CloneError::CloneFailed(err.to_string())
+        }
+    })?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -134,9 +159,45 @@ pub fn clone_github_root(url: &GithubRootUrl) -> Result<TempDirGuard, CloneError
     Ok(guard)
 }
 
+/// Resolves a `ROOT` command-line argument, which may be a local path or a
+/// public GitHub repository URL (see [`parse_github_root_url`]). A URL is
+/// shallow-cloned into a temporary directory first; either way, the
+/// resulting path is validated exactly like any other local root via
+/// [`crate::resolve_root`]. This is the single place that owns the "is this
+/// a URL, is this a path" decision, so every caller -- today just `main`,
+/// potentially a future second binary or integration test -- gets
+/// consistent behavior and consistent error formatting for free.
+pub fn resolve_root_arg(raw: &str) -> Result<(PathBuf, Option<TempDirGuard>), String> {
+    match parse_github_root_url(raw) {
+        Some(github_url) => {
+            let guard = clone_github_root(&github_url).map_err(|err| err.to_string())?;
+            let root = crate::resolve_root(guard.path())?;
+            Ok((root, Some(guard)))
+        }
+        None => {
+            let root = crate::resolve_root(Path::new(raw))?;
+            Ok((root, None))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resolve_root_arg_resolves_an_existing_local_directory() {
+        let (root, guard) = resolve_root_arg(".").expect("current directory should resolve");
+        assert!(root.is_dir());
+        assert!(guard.is_none());
+    }
+
+    #[test]
+    fn resolve_root_arg_rejects_a_missing_local_path() {
+        let err = resolve_root_arg("./this-path-should-not-exist-abc123")
+            .expect_err("a missing path should be rejected");
+        assert!(err.contains("could not be resolved"));
+    }
 
     #[test]
     fn parses_a_plain_owner_repo_url() {
