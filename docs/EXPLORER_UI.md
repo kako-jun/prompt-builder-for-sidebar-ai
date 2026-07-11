@@ -24,6 +24,21 @@ not a link or button -- this is a single-root-per-session tool, so there is
 nowhere to navigate "home" to (that becomes meaningful once issue #11 adds a
 root picker).
 
+## Quick select chips
+
+The four selection shortcuts ("All text files", "Source only", "Docs only",
+"Clear selection") render under a "Quick select" heading as small pill-shaped
+chips, each with a decorative inline SVG icon (`aria-hidden="true"`, matching
+the pattern used by the search filter icon and the embedded app logo -- no
+icon font, no external asset). They're deliberately lighter-weight than
+primary action buttons elsewhere in the UI (e.g. "Generate prompt") since
+each is a one-shot shortcut that replaces the current checked-file set rather
+than a committal action. "Clear selection" uses a dashed, ghost-style
+treatment (no fill, muted border) to read as a reset action distinct from the
+three additive presets, and stays pushed to the right of the row. The
+row keeps its `data-preset` attributes and `role="group"` grouping; only the
+visual weight changed.
+
 ## Language (English / Japanese)
 
 The UI ships in two languages -- English (the source and fallback) and
