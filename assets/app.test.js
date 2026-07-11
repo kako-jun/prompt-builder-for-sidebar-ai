@@ -1996,6 +1996,11 @@ describe("tr", () => {
     assert.equal(tr("en", "composer.generate"), "Generate prompt");
   });
 
+  test("returns the preset group title for both locales (added with the preset chips redesign)", () => {
+    assert.equal(tr("en", "preset.groupTitle"), "Quick select");
+    assert.equal(tr("ja", "preset.groupTitle"), "クイック選択");
+  });
+
   test("falls back to English for an unsupported locale (its table is missing entirely)", () => {
     // MESSAGES has no "fr" table, so the lookup drops to the English one.
     assert.equal(tr("fr", "stats.none"), "No files selected.");

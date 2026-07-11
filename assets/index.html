@@ -62,11 +62,62 @@
           <p id="root-path" class="root-path"></p>
         </div>
 
-        <div class="presets" role="group" data-i18n-aria="preset.groupLabel" aria-label="Selection presets">
-          <button type="button" class="preset-button" data-preset="all-text" data-i18n="preset.allText">All text files</button>
-          <button type="button" class="preset-button" data-preset="source" data-i18n="preset.sourceOnly">Source only</button>
-          <button type="button" class="preset-button" data-preset="docs" data-i18n="preset.docsOnly">Docs only</button>
-          <button type="button" class="preset-button preset-button-clear" data-preset="clear" data-i18n="preset.clearSelection">Clear selection</button>
+        <h2 id="preset-group-title" class="preset-group-title" data-i18n="preset.groupTitle">Quick select</h2>
+        <div class="presets" role="group" aria-labelledby="preset-group-title">
+          <button type="button" class="preset-button" data-preset="all-text">
+            <svg class="preset-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+              <path
+                d="M3.5 1.5h6l3 3v10h-9z"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.2"
+                stroke-linejoin="round"
+                stroke-linecap="round"
+              />
+              <path d="M5.5 7.5h5M5.5 10h5M5.5 12.5h3" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" />
+            </svg>
+            <span data-i18n="preset.allText">All text files</span>
+          </button>
+          <button type="button" class="preset-button" data-preset="source">
+            <svg class="preset-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+              <path
+                d="M5.5 4 2 8l3.5 4M10.5 4 14 8l-3.5 4"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.3"
+                stroke-linejoin="round"
+                stroke-linecap="round"
+              />
+            </svg>
+            <span data-i18n="preset.sourceOnly">Source only</span>
+          </button>
+          <button type="button" class="preset-button" data-preset="docs">
+            <svg class="preset-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+              <path
+                d="M2.5 2.5h7.5a2 2 0 0 1 2 2v9h-7.5a2 2 0 0 1-2-2z"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.2"
+                stroke-linejoin="round"
+                stroke-linecap="round"
+              />
+              <path d="M2.5 2.5v9a2 2 0 0 0 2 2h7.5" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
+              <path d="M4.5 5.5h6M4.5 8h6" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" />
+            </svg>
+            <span data-i18n="preset.docsOnly">Docs only</span>
+          </button>
+          <button type="button" class="preset-button preset-button-clear" data-preset="clear">
+            <svg class="preset-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+              <path
+                d="M4 4l8 8M12 4l-8 8"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.3"
+                stroke-linecap="round"
+              />
+            </svg>
+            <span data-i18n="preset.clearSelection">Clear selection</span>
+          </button>
         </div>
 
         <div class="search">

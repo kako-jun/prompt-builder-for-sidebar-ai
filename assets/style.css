@@ -161,24 +161,50 @@ button {
   overflow-wrap: break-word;
 }
 
+/* Issue #25: a small heading above the preset row, styled like the existing
+   "Recently opened" section title (.recent-title) so its purpose reads
+   immediately as a lightweight, non-committal group of shortcuts. */
+.preset-group-title {
+  margin: 0;
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+}
+
 .presets {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.4rem;
+  gap: 0.35rem;
 }
 
+/* Issue #25: chips, not primary action buttons -- the four selection
+   shortcuts are one-shot, non-committal presets that replace the current
+   checked-file set, so they're styled smaller/muted/pill-shaped to read as
+   lightweight utility controls rather than "Generate prompt"-weight actions. */
 .preset-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
   background: var(--bg-panel-alt);
-  border: 1px solid var(--border);
-  color: var(--text);
-  border-radius: 4px;
-  padding: 0.3rem 0.55rem;
-  font-size: 0.8rem;
+  border: 1px solid transparent;
+  color: var(--text-dim);
+  border-radius: 999px;
+  padding: 0.22rem 0.6rem;
+  font-size: 0.74rem;
   cursor: pointer;
+}
+
+.preset-icon {
+  width: 0.75rem;
+  height: 0.75rem;
+  flex-shrink: 0;
 }
 
 .preset-button:hover {
   border-color: var(--accent);
+  color: var(--text);
 }
 
 .preset-button:focus-visible {
@@ -186,8 +212,19 @@ button {
   outline-offset: 1px;
 }
 
+/* "Clear" is a reset action, not a fourth preset: dashed/muted ghost
+   treatment (no fill) visually separates it from the three additive
+   presets while keeping the same chip shape and focus/hover behavior. */
 .preset-button-clear {
   margin-left: auto;
+  background: transparent;
+  border: 1px dashed var(--border);
+  color: var(--text-dim);
+}
+
+.preset-button-clear:hover {
+  border-color: var(--danger);
+  color: var(--danger);
 }
 
 .search {
