@@ -39,6 +39,427 @@ const SOURCE_EXTENSIONS = new Set([
 ]);
 const DOC_EXTENSIONS = new Set(["md", "mdx", "txt"]);
 
+// ---- Internationalization (i18n) ----
+//
+// English is the source and fallback; Japanese is the one switchable
+// alternative (issue #22). A single active locale drives both the UI chrome
+// and the generated prompt text. `MESSAGES` is the single source of truth for
+// every user-visible string in either language; `tr(locale, key, params)` is
+// the pure lookup (explicit locale, English fallback) used by the DOM-free
+// prompt/stats builders so their output is deterministic per-locale and stays
+// testable without a browser, and `t(key, params)` is the UI-facing wrapper
+// that reads whatever locale is currently active.
+
+const LOCALE_STORAGE_KEY = "pbsa-locale";
+const SUPPORTED_LOCALES = ["en", "ja"];
+
+const MESSAGES = {
+  en: {
+    // Generated prompt -- goal instructions
+    "goal.locate.instruction": "Locate the code and functions most relevant to the request below.",
+    "goal.explain.instruction": "Explain what this code does and how it works.",
+    "goal.investigate-bug.instruction":
+      "Investigate the described bug (or its impact), including its likely root cause.",
+    "goal.review.instruction": "Review this code's design and/or security, and list any concerns.",
+    "goal.extract-tests.instruction":
+      "Extract or propose test cases that cover this code's behavior.",
+    "goal.refactor.instruction":
+      "Suggest refactoring opportunities here and explain why each would help.",
+    "goal.plan.instruction": "Produce an implementation plan for the request below.",
+
+    // Generated prompt -- output instructions
+    "output.concise.instruction": "Respond with a concise answer.",
+    "output.report.instruction": "Respond with a structured investigation report.",
+    "output.issue.instruction":
+      "Respond with a GitHub issue, ready to file, with a clear title and body.",
+    "output.instructions.instruction":
+      "Respond with step-by-step instructions for an implementation agent.",
+    "output.checklist.instruction": "Respond with a checklist.",
+    "output.diff.instruction": "Respond with a unified diff.",
+    "output.file.instruction":
+      "Generate the response as a downloadable file named {name}.",
+
+    // Generated prompt -- target phrases
+    "target.checked.phrase": "the checked files: {refs}",
+    "target.checked.empty":
+      "the checked files (none are currently checked -- check some files in the explorer first)",
+    "target.lines.phrase": "the selected line range: {refs}",
+    "target.lines.phrasePlural": "the selected line ranges: {refs}",
+    "target.lines.empty":
+      "the selected line range (no lines are currently selected -- click a line number in an open file first)",
+    "target.diff.phrase": "the current Git diff of this project",
+    "target.page.phrase": "the whole page (everything currently visible in this browser tab)",
+
+    // Generated prompt -- assembled sentences
+    "prompt.targetLine": "Target: {target}.",
+    "prompt.additionalInstructions": "Additional instructions:\n{text}",
+    "prompt.referenceNote":
+      "When referring to a specific location in the code, use the stable references shown on the page (@file:..., @dir:..., @lines:...) so it can be traced back precisely.",
+
+    // Generated prompt -- context section
+    "context.heading": "## Context",
+    "context.gitDiffHeading": "### Git diff",
+    "context.diff.pageNote":
+      '(Git diff content is never shown on the page itself, so "Page context only" can\'t include it here. Switch context mode to "Referenced excerpts" or "Full selected files" to embed the diff.)',
+    // Git-diff target status lines embedded in the generated prompt (issue #22:
+    // these are user-visible prose, so they live in the catalog rather than
+    // being hardcoded in `gatherDiffEntries`). `diff.status.clean` doubles as
+    // `buildPromptContextSection`'s defensive "no entry at all" fallback, which
+    // is why there is no separate generic "no diff" message.
+    "diff.status.notRepo": "(This directory is not a Git repository, so there is no diff to show.)",
+    "diff.status.clean": "(No local changes: the working tree is clean.)",
+    "diff.status.loadFailed": "(failed to load the Git diff: {detail})",
+    "context.excerpts.none":
+      '(No line range is currently selected, so no excerpt could be embedded here. Select one first, or switch context mode to "Page context only".)',
+    "context.full.none":
+      '(No files are currently checked, so no content could be embedded here. Check some files first, or switch context mode to "Page context only".)',
+
+    // Selection size statistics
+    "stats.none": "No files selected.",
+    "stats.oneFile": "1 file selected",
+    "stats.manyFiles": "{count} files selected",
+    "stats.pending": " ({count} still loading)",
+    "stats.base": "{files}{pending} · {chars} characters · ~{tokens} tokens (rough estimate)",
+    "stats.large": " · ⚠ large selection",
+
+    // Composer -- goal option labels
+    "goal.locate.label": "Find relevant code",
+    "goal.explain.label": "Explain code",
+    "goal.investigate-bug.label": "Investigate a bug or its impact",
+    "goal.review.label": "Review design or security",
+    "goal.extract-tests.label": "Extract test cases",
+    "goal.refactor.label": "Suggest refactoring",
+    "goal.plan.label": "Plan implementation",
+
+    // Composer -- target option labels
+    "target.page.label": "Whole page",
+    "target.checked.label": "Checked files",
+    "target.lines.label": "Selected lines",
+    "target.diff.label": "Git diff",
+
+    // Composer -- output option labels
+    "output.concise.label": "Concise answer",
+    "output.report.label": "Investigation report",
+    "output.issue.label": "GitHub issue",
+    "output.instructions.label": "Implementation instructions",
+    "output.checklist.label": "Checklist",
+    "output.diff.label": "Unified diff",
+    "output.file.label": "Downloadable file",
+
+    // Composer -- context-mode option labels
+    "contextMode.page.label": "Page context only",
+    "contextMode.excerpts.label": "Referenced excerpts",
+    "contextMode.full.label": "Full selected files",
+
+    // Static chrome
+    "security.notice":
+      '⚠ Anything you copy from this page may be pasted into a third-party AI assistant. File content can contain instructions written to manipulate that AI ("prompt injection") -- review what you\'re about to share before pasting it anywhere.',
+    "locale.label": "Language",
+    "root.loading": "Loading…",
+    "root.loadFailed": "(failed to load root)",
+    "root.loadFailedHttp": "(failed to load root: HTTP {status})",
+    "preset.allText": "All text files",
+    "preset.sourceOnly": "Source only",
+    "preset.docsOnly": "Docs only",
+    "preset.clearSelection": "Clear selection",
+    "preset.groupLabel": "Selection presets",
+    "search.label": "Filter files by path",
+    "search.placeholder": "Filter by path…",
+    "recent.sectionLabel": "Recently opened files",
+    "recent.title": "Recently opened",
+    "recent.clear": "Clear",
+    "recent.empty": "No recently opened files yet.",
+    "recent.removeAria": "Remove {path} from recently opened",
+    "tree.truncationWarning":
+      "⚠ This project has more files than can be shown at once; the list below is incomplete.",
+    "tree.explorerLabel": "File explorer",
+    "tree.loadFailed": "Failed to load the file tree.",
+    "tree.loadFailedHttp": "Failed to load the file tree (HTTP {status}).",
+    "tree.expandDir": "Expand directory",
+    "tree.collapseDir": "Collapse directory",
+    "tree.dirCopyTitle": "Copy all files in this directory (Markdown)",
+    "tree.dirCopyAria": "Copy all files under {path}",
+    "tree.rootName": "the project root",
+    "tree.secretBadge": "⚠ secret?",
+    "tree.secretTitle": "This file's name looks like it may contain secrets.",
+    "resizer.label": "Resize explorer pane",
+    "promptComposer.ariaLabel": "Prompt composer",
+    "promptComposer.title": "Prompt composer",
+    "promptComposer.collapse": "Collapse prompt composer",
+    "promptComposer.expand": "Expand prompt composer",
+    "composer.goal": "Goal",
+    "composer.target": "Target",
+    "composer.output": "Output",
+    "composer.filename": "Filename",
+    "composer.filenamePlaceholder": "e.g. test-spec.md",
+    "composer.contextMode": "Context mode",
+    "composer.extra": "Additional instructions (optional)",
+    "composer.generate": "Generate prompt",
+    "composer.copy": "Copy prompt",
+    "composer.result": "Generated prompt (editable)",
+    "composer.resultPlaceholder": "Choose options above and click “Generate prompt”.",
+    "content.emptyHint": "Select files in the explorer to see their contents here.",
+    "filePanel.expand": "Expand file panel",
+    "filePanel.collapse": "Collapse file panel",
+    "file.loading": "Loading…",
+    "file.loadFailed": "(failed to load: {err})",
+    "file.loadFailedHttp": "(failed to load: HTTP {status})",
+    "copy.copy": "Copy",
+    "copy.copied": "Copied!",
+    "copy.failed": "Copy failed",
+    "copy.moreOptions": "More copy options",
+    "menu.copyFileAs": "Copy file as {format}",
+    "menu.copyReferenceOnly": "Copy reference only",
+    "menu.copyReferenceAndCode": "Copy reference + code",
+    "menu.copyAllCheckedAs": "Copy all checked as {format}",
+    "menu.copyFileTree": "Copy file tree",
+    "toolbar.oneFileOpen": "1 file open",
+    "toolbar.manyFilesOpen": "{count} files open",
+    "toolbar.copyAllChecked": "Copy all checked",
+    "toast.copied": "Copied to clipboard.",
+    "toast.copyFailed": "Copy failed: {error}",
+    "toast.unknownError": "unknown error",
+    "clipboard.unavailable": "Clipboard API is not available in this browser.",
+  },
+  ja: {
+    // Generated prompt -- goal instructions
+    "goal.locate.instruction": "以下の依頼に最も関連するコードと関数を特定してください。",
+    "goal.explain.instruction": "このコードが何をするか、どのように動作するかを説明してください。",
+    "goal.investigate-bug.instruction":
+      "記載されたバグ（またはその影響）を、想定される根本原因も含めて調査してください。",
+    "goal.review.instruction": "このコードの設計やセキュリティをレビューし、懸念点を挙げてください。",
+    "goal.extract-tests.instruction":
+      "このコードの挙動をカバーするテストケースを抽出または提案してください。",
+    "goal.refactor.instruction":
+      "ここでのリファクタリングの余地を提案し、それぞれがなぜ有効かを説明してください。",
+    "goal.plan.instruction": "以下の依頼に対する実装計画を作成してください。",
+
+    // Generated prompt -- output instructions
+    "output.concise.instruction": "簡潔な回答で答えてください。",
+    "output.report.instruction": "構造化された調査レポートで答えてください。",
+    "output.issue.instruction":
+      "そのまま起票できるGitHub issueを、明確なタイトルと本文付きで答えてください。",
+    "output.instructions.instruction":
+      "実装エージェント向けの手順を、ステップごとに答えてください。",
+    "output.checklist.instruction": "チェックリストで答えてください。",
+    "output.diff.instruction": "unified diffで答えてください。",
+    "output.file.instruction":
+      "回答を {name} という名前のダウンロード可能なファイルとして生成してください。",
+
+    // Generated prompt -- target phrases
+    "target.checked.phrase": "チェックしたファイル: {refs}",
+    "target.checked.empty":
+      "チェックしたファイル（現在チェックされているファイルはありません — まずエクスプローラーでファイルをチェックしてください）",
+    "target.lines.phrase": "選択した行範囲: {refs}",
+    "target.lines.phrasePlural": "選択した行範囲: {refs}",
+    "target.lines.empty":
+      "選択した行範囲（現在選択されている行はありません — まず開いているファイルの行番号をクリックしてください）",
+    "target.diff.phrase": "このプロジェクトの現在のGit差分",
+    "target.page.phrase": "ページ全体（このブラウザタブに現在表示されているすべて）",
+
+    // Generated prompt -- assembled sentences
+    "prompt.targetLine": "対象: {target}。",
+    "prompt.additionalInstructions": "追加の指示:\n{text}",
+    "prompt.referenceNote":
+      "コード内の特定の箇所を参照するときは、ページに表示されている安定参照（@file:..., @dir:..., @lines:...）を使い、正確に辿れるようにしてください。",
+
+    // Generated prompt -- context section
+    "context.heading": "## コンテキスト",
+    "context.gitDiffHeading": "### Git差分",
+    "context.diff.pageNote":
+      "（Git差分はページ自体には表示されないため、「ページのコンテキストのみ」ではここに含められません。差分を埋め込むには、コンテキストモードを「参照した抜粋」または「選択したファイル全体」に切り替えてください。）",
+    "diff.status.notRepo": "（このディレクトリは Git リポジトリではないため、表示できる差分はありません。）",
+    "diff.status.clean": "（ローカルの変更はありません。作業ツリーはクリーンです。）",
+    "diff.status.loadFailed": "（Git 差分の取得に失敗しました: {detail}）",
+    "context.excerpts.none":
+      "（現在選択されている行範囲がないため、抜粋を埋め込めませんでした。まず選択するか、コンテキストモードを「ページのコンテキストのみ」に切り替えてください。）",
+    "context.full.none":
+      "（現在チェックされているファイルがないため、内容を埋め込めませんでした。まずファイルをチェックするか、コンテキストモードを「ページのコンテキストのみ」に切り替えてください。）",
+
+    // Selection size statistics
+    "stats.none": "ファイルが選択されていません。",
+    "stats.oneFile": "1 ファイル選択中",
+    "stats.manyFiles": "{count} ファイル選択中",
+    "stats.pending": "（{count} 件読み込み中）",
+    "stats.base": "{files}{pending} · {chars} 文字 · 約 {tokens} トークン（概算）",
+    "stats.large": " · ⚠ 選択が大きすぎます",
+
+    // Composer -- goal option labels
+    "goal.locate.label": "関連コードを探す",
+    "goal.explain.label": "コードを説明",
+    "goal.investigate-bug.label": "バグやその影響を調査",
+    "goal.review.label": "設計やセキュリティをレビュー",
+    "goal.extract-tests.label": "テストケースを抽出",
+    "goal.refactor.label": "リファクタリングを提案",
+    "goal.plan.label": "実装計画を立てる",
+
+    // Composer -- target option labels
+    "target.page.label": "ページ全体",
+    "target.checked.label": "チェックしたファイル",
+    "target.lines.label": "選択した行",
+    "target.diff.label": "Git差分",
+
+    // Composer -- output option labels
+    "output.concise.label": "簡潔な回答",
+    "output.report.label": "調査レポート",
+    "output.issue.label": "GitHub issue",
+    "output.instructions.label": "実装手順",
+    "output.checklist.label": "チェックリスト",
+    "output.diff.label": "unified diff",
+    "output.file.label": "ダウンロードファイル",
+
+    // Composer -- context-mode option labels
+    "contextMode.page.label": "ページのコンテキストのみ",
+    "contextMode.excerpts.label": "参照した抜粋",
+    "contextMode.full.label": "選択したファイル全体",
+
+    // Static chrome
+    "security.notice":
+      "⚠ このページからコピーした内容は、サードパーティのAIアシスタントに貼り付けられる可能性があります。ファイルの内容には、そのAIを操作するために書かれた指示（「プロンプトインジェクション」）が含まれていることがあります — 貼り付ける前に、共有しようとしている内容を確認してください。",
+    "locale.label": "言語",
+    "root.loading": "読み込み中…",
+    "root.loadFailed": "（ルートの読み込みに失敗しました）",
+    "root.loadFailedHttp": "（ルートの読み込みに失敗しました: HTTP {status}）",
+    "preset.allText": "すべてのテキストファイル",
+    "preset.sourceOnly": "ソースのみ",
+    "preset.docsOnly": "ドキュメントのみ",
+    "preset.clearSelection": "選択をクリア",
+    "preset.groupLabel": "選択プリセット",
+    "search.label": "パスでファイルを絞り込む",
+    "search.placeholder": "パスで絞り込み…",
+    "recent.sectionLabel": "最近開いたファイル",
+    "recent.title": "最近開いたファイル",
+    "recent.clear": "クリア",
+    "recent.empty": "最近開いたファイルはまだありません。",
+    "recent.removeAria": "{path} を最近開いたファイルから削除",
+    "tree.truncationWarning":
+      "⚠ このプロジェクトには一度に表示できる数を超えるファイルがあります。下の一覧は不完全です。",
+    "tree.explorerLabel": "ファイルエクスプローラー",
+    "tree.loadFailed": "ファイルツリーの読み込みに失敗しました。",
+    "tree.loadFailedHttp": "ファイルツリーの読み込みに失敗しました（HTTP {status}）。",
+    "tree.expandDir": "ディレクトリを展開",
+    "tree.collapseDir": "ディレクトリを折りたたむ",
+    "tree.dirCopyTitle": "このディレクトリ内の全ファイルをコピー（Markdown）",
+    "tree.dirCopyAria": "{path} 以下の全ファイルをコピー",
+    "tree.rootName": "プロジェクトルート",
+    "tree.secretBadge": "⚠ 機密?",
+    "tree.secretTitle": "このファイル名は機密情報を含む可能性があります。",
+    "resizer.label": "エクスプローラーの幅を変更",
+    "promptComposer.ariaLabel": "プロンプトコンポーザー",
+    "promptComposer.title": "プロンプトコンポーザー",
+    "promptComposer.collapse": "プロンプトコンポーザーを折りたたむ",
+    "promptComposer.expand": "プロンプトコンポーザーを展開",
+    "composer.goal": "目的",
+    "composer.target": "対象",
+    "composer.output": "出力",
+    "composer.filename": "ファイル名",
+    "composer.filenamePlaceholder": "例: test-spec.md",
+    "composer.contextMode": "コンテキスト",
+    "composer.extra": "追加の指示（任意）",
+    "composer.generate": "プロンプトを生成",
+    "composer.copy": "プロンプトをコピー",
+    "composer.result": "生成されたプロンプト（編集可）",
+    "composer.resultPlaceholder": "上のオプションを選んで「プロンプトを生成」を押してください。",
+    "content.emptyHint": "エクスプローラーでファイルを選ぶと、ここに内容が表示されます。",
+    "filePanel.expand": "ファイルパネルを展開",
+    "filePanel.collapse": "ファイルパネルを折りたたむ",
+    "file.loading": "読み込み中…",
+    "file.loadFailed": "（読み込みに失敗しました: {err}）",
+    "file.loadFailedHttp": "（読み込みに失敗しました: HTTP {status}）",
+    "copy.copy": "コピー",
+    "copy.copied": "コピーしました!",
+    "copy.failed": "コピー失敗",
+    "copy.moreOptions": "その他のコピー方法",
+    "menu.copyFileAs": "ファイルを {format} でコピー",
+    "menu.copyReferenceOnly": "参照のみコピー",
+    "menu.copyReferenceAndCode": "参照 + コード をコピー",
+    "menu.copyAllCheckedAs": "チェック全件を {format} でコピー",
+    "menu.copyFileTree": "ファイルツリーをコピー",
+    "toolbar.oneFileOpen": "1 ファイルを表示中",
+    "toolbar.manyFilesOpen": "{count} ファイルを表示中",
+    "toolbar.copyAllChecked": "チェック全件をコピー",
+    "toast.copied": "クリップボードにコピーしました。",
+    "toast.copyFailed": "コピー失敗: {error}",
+    "toast.unknownError": "不明なエラー",
+    "clipboard.unavailable": "このブラウザではクリップボードAPIを利用できません。",
+  },
+};
+
+// The active UI locale. Resolved lazily on first `getLocale()` so this module
+// stays importable in a non-browser test runner (no window/navigator/
+// localStorage) without side effects at import time.
+let activeLocale = null;
+
+/** Determines the initial locale: a previously stored choice wins; otherwise
+ * `navigator.language` starting with "ja" auto-selects Japanese; everything
+ * else falls back to English. All storage/navigator access is guarded so a
+ * private-browsing or non-browser context degrades to "en" instead of
+ * throwing. */
+export function detectInitialLocale() {
+  try {
+    const stored = localStorage.getItem(LOCALE_STORAGE_KEY);
+    if (SUPPORTED_LOCALES.includes(stored)) return stored;
+  } catch (err) {
+    // localStorage unavailable (private browsing, disabled, non-browser).
+  }
+  try {
+    const lang = typeof navigator !== "undefined" ? navigator.language || "" : "";
+    if (lang.toLowerCase().startsWith("ja")) return "ja";
+  } catch (err) {
+    // navigator unavailable; fall through to the English default.
+  }
+  return "en";
+}
+
+/** Returns the currently active locale, resolving (and caching) the initial
+ * one on first call. */
+export function getLocale() {
+  if (activeLocale === null) activeLocale = detectInitialLocale();
+  return activeLocale;
+}
+
+/** Switches the active locale, persists the choice (best-effort), and
+ * re-renders the whole UI so every label and -- if the generated prompt hasn't
+ * been hand-edited -- the prompt itself follow the new language. */
+export function setLocale(loc) {
+  activeLocale = SUPPORTED_LOCALES.includes(loc) ? loc : "en";
+  try {
+    localStorage.setItem(LOCALE_STORAGE_KEY, activeLocale);
+  } catch (err) {
+    // localStorage may be unavailable; the choice still applies for this
+    // session, it just won't be remembered across reloads.
+  }
+  renderAll();
+}
+
+/** Substitutes `{name}`-style placeholders in `template` from `params`, using
+ * a function replacement (not a string one) so a "$" in a substituted value
+ * is never interpreted as a replacement pattern, and so a value that itself
+ * contains a `{placeholder}` token is inserted verbatim rather than being
+ * re-substituted. */
+export function substituteParams(template, params) {
+  if (!params) return template;
+  return template.replace(/\{(\w+)\}/g, (match, key) =>
+    key in params ? String(params[key]) : match
+  );
+}
+
+/** Pure message lookup for an explicit `locale`: returns that locale's string
+ * for `key`, falling back to English, then to the key itself (so a missing
+ * translation never renders as an empty label). Used by the DOM-free
+ * prompt/stats builders, which must be deterministic per-locale regardless of
+ * whatever locale the surrounding UI happens to be showing. */
+export function tr(locale, key, params) {
+  const table = MESSAGES[locale] || MESSAGES.en;
+  const value = table[key] ?? MESSAGES.en[key] ?? key;
+  return substituteParams(value, params);
+}
+
+/** UI-facing translation: `tr` against the currently active locale. */
+export function t(key, params) {
+  return tr(getLocale(), key, params);
+}
+
 const state = {
   entries: [],
   rootNode: null,
@@ -54,11 +475,36 @@ const state = {
   // selection). Tracked per path so selections in different open files never
   // cross-contaminate each other's "last clicked line".
   lineSelections: new Map(),
+  // The exact text the last `generatePrompt()` wrote into the result
+  // textarea, and whether one has ever been generated. Used on a locale
+  // switch to decide whether the generated prompt is still pristine (safe to
+  // regenerate in the new language) or has been hand-edited (must not be
+  // clobbered).
+  lastGeneratedPrompt: "",
+  promptGenerated: false,
+  // Last tree/root load-failure state, as `{ key, params }` (or null when the
+  // load succeeded). Kept so a locale switch can re-render the failure message
+  // in the new language instead of blanking it out (issue #22): `renderTree`
+  // clears `#tree-root` and returns early when there's no `rootNode`, and
+  // nothing re-renders `#root-basename` on its own, so without this the
+  // failure text would either vanish or stay stuck in the old language.
+  treeLoadError: null,
+  rootLoadError: null,
 };
 
 let el = {};
 
 async function init() {
+  wireLocaleSwitcher();
+  // Known/accepted (issue #22, nit): the HTML ships English static chrome, so a
+  // ja user can see a brief English flash before this runs. This module is
+  // deferred but executes near-immediately, so the flash is negligible;
+  // duplicating the whole catalog into the pre-paint HTML to avoid it isn't
+  // worth it for a self-hosted single-file tool.
+  applyStaticI18n();
+  document.documentElement.lang = getLocale();
+  syncLocaleControl();
+  el.rootBasename.textContent = t("root.loading");
   wirePresetButtons();
   wireSearchInput();
   wireRecentClear();
@@ -66,6 +512,7 @@ async function init() {
   wireHashNavigation();
   wireCopyMenuDismissal();
   wirePromptComposer();
+  updateComposerToggleAria();
   renderRecentList();
   renderContentToolbar();
   await Promise.all([loadRoot(), loadTree()]);
@@ -84,14 +531,28 @@ async function loadRoot() {
   try {
     const response = await fetch(apiUrl("/api/root"));
     if (!response.ok) {
-      el.rootBasename.textContent = `(failed to load root: HTTP ${response.status})`;
+      state.rootLoadError = { key: "root.loadFailedHttp", params: { status: response.status } };
+      renderRootBasename();
       return;
     }
     const data = await response.json();
+    state.rootLoadError = null;
     el.rootBasename.textContent = data.basename;
     el.rootPath.textContent = data.absolutePath;
   } catch (err) {
-    el.rootBasename.textContent = "(failed to load root)";
+    state.rootLoadError = { key: "root.loadFailed", params: null };
+    renderRootBasename();
+  }
+}
+
+/** Re-applies the root-basename load-failure message in the active locale.
+ * A successful load shows the real basename (not a translatable string), so
+ * this only ever needs to act when a failure is currently latched; it's called
+ * both from `loadRoot` and from `renderAll` on a locale switch. */
+function renderRootBasename() {
+  if (!el.rootBasename) return;
+  if (state.rootLoadError) {
+    el.rootBasename.textContent = t(state.rootLoadError.key, state.rootLoadError.params);
   }
 }
 
@@ -99,10 +560,12 @@ async function loadTree() {
   try {
     const response = await fetch(apiUrl("/api/tree"));
     if (!response.ok) {
-      el.treeRoot.textContent = `Failed to load the file tree (HTTP ${response.status}).`;
+      state.treeLoadError = { key: "tree.loadFailedHttp", params: { status: response.status } };
+      renderTree();
       return;
     }
     const data = await response.json();
+    state.treeLoadError = null;
     state.entries = data.entries;
     buildTree(data.entries);
     renderTree();
@@ -110,7 +573,8 @@ async function loadTree() {
     // walk short, so an incomplete list never silently looks complete.
     el.treeTruncationWarning.hidden = !data.truncated;
   } catch (err) {
-    el.treeRoot.textContent = "Failed to load the file tree.";
+    state.treeLoadError = { key: "tree.loadFailed", params: null };
+    renderTree();
   }
 }
 
@@ -195,6 +659,13 @@ export function sortedChildren(node) {
 
 function renderTree() {
   el.treeRoot.innerHTML = "";
+  // A latched load failure (issue #22) is re-rendered here in the active
+  // locale, so a language switch updates the message instead of blanking it
+  // (the `!state.rootNode` early return below would otherwise leave it empty).
+  if (state.treeLoadError) {
+    el.treeRoot.textContent = t(state.treeLoadError.key, state.treeLoadError.params);
+    return;
+  }
   if (!state.rootNode) return;
 
   const rootList = document.createElement("ul");
@@ -235,7 +706,7 @@ function renderNode(node) {
     toggle.className = "tree-toggle";
     toggle.textContent = expanded ? "▾" : "▸";
     toggle.setAttribute("aria-expanded", String(expanded));
-    toggle.setAttribute("aria-label", expanded ? "Collapse directory" : "Expand directory");
+    toggle.setAttribute("aria-label", expanded ? t("tree.collapseDir") : t("tree.expandDir"));
     toggle.addEventListener("click", () => toggleDir(node.path));
     row.appendChild(toggle);
   } else {
@@ -275,10 +746,10 @@ function renderNode(node) {
     copyButton.type = "button";
     copyButton.className = "tree-dir-copy";
     copyButton.textContent = "⧉";
-    copyButton.title = "Copy all files in this directory (Markdown)";
+    copyButton.title = t("tree.dirCopyTitle");
     copyButton.setAttribute(
       "aria-label",
-      `Copy all files under ${node.path || "the project root"}`
+      t("tree.dirCopyAria", { path: node.path || t("tree.rootName") })
     );
     copyButton.addEventListener("click", (event) => {
       event.stopPropagation();
@@ -290,8 +761,8 @@ function renderNode(node) {
   if (!node.isDir && node.likelySecret) {
     const badge = document.createElement("span");
     badge.className = "secret-badge";
-    badge.textContent = "⚠ secret?";
-    badge.title = "This file's name looks like it may contain secrets.";
+    badge.textContent = t("tree.secretBadge");
+    badge.title = t("tree.secretTitle");
     row.appendChild(badge);
   }
 
@@ -755,56 +1226,36 @@ export function sliceSelectedLines(content, start, end) {
 // `state` and calls these.
 
 export const PROMPT_GOALS = [
-  { value: "locate", label: "Find relevant code" },
-  { value: "explain", label: "Explain code" },
-  { value: "investigate-bug", label: "Investigate a bug or its impact" },
-  { value: "review", label: "Review design or security" },
-  { value: "extract-tests", label: "Extract test cases" },
-  { value: "refactor", label: "Suggest refactoring" },
-  { value: "plan", label: "Plan implementation" },
+  { value: "locate", labelKey: "goal.locate.label" },
+  { value: "explain", labelKey: "goal.explain.label" },
+  { value: "investigate-bug", labelKey: "goal.investigate-bug.label" },
+  { value: "review", labelKey: "goal.review.label" },
+  { value: "extract-tests", labelKey: "goal.extract-tests.label" },
+  { value: "refactor", labelKey: "goal.refactor.label" },
+  { value: "plan", labelKey: "goal.plan.label" },
 ];
 
-const PROMPT_GOAL_INSTRUCTIONS = {
-  locate: "Locate the code and functions most relevant to the request below.",
-  explain: "Explain what this code does and how it works.",
-  "investigate-bug":
-    "Investigate the described bug (or its impact), including its likely root cause.",
-  review: "Review this code's design and/or security, and list any concerns.",
-  "extract-tests": "Extract or propose test cases that cover this code's behavior.",
-  refactor: "Suggest refactoring opportunities here and explain why each would help.",
-  plan: "Produce an implementation plan for the request below.",
-};
-
 export const PROMPT_TARGETS = [
-  { value: "page", label: "Whole page" },
-  { value: "checked", label: "Checked files" },
-  { value: "lines", label: "Selected lines" },
-  { value: "diff", label: "Git diff" },
+  { value: "page", labelKey: "target.page.label" },
+  { value: "checked", labelKey: "target.checked.label" },
+  { value: "lines", labelKey: "target.lines.label" },
+  { value: "diff", labelKey: "target.diff.label" },
 ];
 
 export const PROMPT_OUTPUTS = [
-  { value: "concise", label: "Concise answer" },
-  { value: "report", label: "Investigation report" },
-  { value: "issue", label: "GitHub issue" },
-  { value: "instructions", label: "Implementation instructions" },
-  { value: "checklist", label: "Checklist" },
-  { value: "diff", label: "Unified diff" },
-  { value: "file", label: "Downloadable file" },
+  { value: "concise", labelKey: "output.concise.label" },
+  { value: "report", labelKey: "output.report.label" },
+  { value: "issue", labelKey: "output.issue.label" },
+  { value: "instructions", labelKey: "output.instructions.label" },
+  { value: "checklist", labelKey: "output.checklist.label" },
+  { value: "diff", labelKey: "output.diff.label" },
+  { value: "file", labelKey: "output.file.label" },
 ];
 
-const PROMPT_OUTPUT_INSTRUCTIONS = {
-  concise: "Respond with a concise answer.",
-  report: "Respond with a structured investigation report.",
-  issue: "Respond with a GitHub issue, ready to file, with a clear title and body.",
-  instructions: "Respond with step-by-step instructions for an implementation agent.",
-  checklist: "Respond with a checklist.",
-  diff: "Respond with a unified diff.",
-};
-
 export const PROMPT_CONTEXT_MODES = [
-  { value: "page", label: "Page context only" },
-  { value: "excerpts", label: "Referenced excerpts" },
-  { value: "full", label: "Full selected files" },
+  { value: "page", labelKey: "contextMode.page.label" },
+  { value: "excerpts", labelKey: "contextMode.excerpts.label" },
+  { value: "full", labelKey: "contextMode.full.label" },
 ];
 
 /** Describes what `target` refers to, in a form that reads naturally inside
@@ -814,24 +1265,26 @@ export const PROMPT_CONTEXT_MODES = [
  * explanatory fallback phrase (rather than an empty/misleading list) when
  * nothing is currently checked/selected, so the resulting prompt still reads
  * as a coherent sentence in that state. */
-export function describePromptTarget(target, data = {}) {
+export function describePromptTarget(target, data = {}, locale = "en") {
   const checkedRefs = data.checkedRefs || [];
   const lineRefs = data.lineRefs || [];
 
   switch (target) {
     case "checked":
       return checkedRefs.length > 0
-        ? `the checked files: ${checkedRefs.join(", ")}`
-        : "the checked files (none are currently checked -- check some files in the explorer first)";
+        ? tr(locale, "target.checked.phrase", { refs: checkedRefs.join(", ") })
+        : tr(locale, "target.checked.empty");
     case "lines":
       return lineRefs.length > 0
-        ? `the selected line range${lineRefs.length > 1 ? "s" : ""}: ${lineRefs.join(", ")}`
-        : "the selected line range (no lines are currently selected -- click a line number in an open file first)";
+        ? tr(locale, lineRefs.length > 1 ? "target.lines.phrasePlural" : "target.lines.phrase", {
+            refs: lineRefs.join(", "),
+          })
+        : tr(locale, "target.lines.empty");
     case "diff":
-      return "the current Git diff of this project";
+      return tr(locale, "target.diff.phrase");
     case "page":
     default:
-      return "the whole page (everything currently visible in this browser tab)";
+      return tr(locale, "target.page.phrase");
   }
 }
 
@@ -839,12 +1292,13 @@ export function describePromptTarget(target, data = {}) {
  * "file" is special-cased since it also needs `filename`; an empty/blank
  * `filename` falls back to "output.md" so the instruction is always a
  * complete, valid sentence rather than naming an empty file. */
-export function describePromptOutput(output, filename) {
+export function describePromptOutput(output, filename, locale = "en") {
   if (output === "file") {
     const name = filename && filename.trim() ? filename.trim() : "output.md";
-    return `Generate the response as a downloadable file named ${formatInlineCode(name)}.`;
+    return tr(locale, "output.file.instruction", { name: formatInlineCode(name) });
   }
-  return PROMPT_OUTPUT_INSTRUCTIONS[output] || PROMPT_OUTPUT_INSTRUCTIONS.concise;
+  const key = `output.${output}.instruction`;
+  return tr(locale, MESSAGES.en[key] !== undefined ? key : "output.concise.instruction");
 }
 
 /** Builds the prompt's "## Context" section, embedding `contextEntries`
@@ -883,30 +1337,36 @@ export function describePromptOutput(output, filename) {
  * was gathered (nothing selected/checked yet), returns an explanatory
  * placeholder instead of an empty/misleading section, so the caller doesn't
  * have to special-case "mode wants content but there isn't any" itself. */
-export function buildPromptContextSection(contextMode, contextEntries, target) {
+export function buildPromptContextSection(contextMode, contextEntries, target, locale = "en") {
+  const heading = tr(locale, "context.heading");
+
   if (target === "diff") {
     if (contextMode === "page") {
-      return '(Git diff content is never shown on the page itself, so "Page context only" can\'t include it here. Switch context mode to "Referenced excerpts" or "Full selected files" to embed the diff.)';
+      return tr(locale, "context.diff.pageNote");
     }
     const entry = contextEntries && contextEntries[0];
-    if (!entry) return "(No Git diff information is available.)";
+    // Defensive only: `gatherDiffEntries` always resolves to exactly one entry
+    // (never `[]`/`undefined`) for a non-"page" diff target, so this branch is
+    // unreachable in production. Reuse the clean-tree wording rather than a
+    // second near-identical "no diff" string.
+    if (!entry) return tr(locale, "diff.status.clean");
     if (!entry.isDiff) return entry.content;
     const fence = markdownFenceFor(entry.content);
-    return `## Context\n\n### Git diff\n\n${fence}diff\n${entry.content}\n${fence}\n`;
+    return `${heading}\n\n${tr(locale, "context.gitDiffHeading")}\n\n${fence}diff\n${entry.content}\n${fence}\n`;
   }
 
   if (contextMode === "page") return "";
 
   if (!contextEntries || contextEntries.length === 0) {
     return contextMode === "excerpts"
-      ? '(No line range is currently selected, so no excerpt could be embedded here. Select one first, or switch context mode to "Page context only".)'
-      : '(No files are currently checked, so no content could be embedded here. Check some files first, or switch context mode to "Page context only".)';
+      ? tr(locale, "context.excerpts.none")
+      : tr(locale, "context.full.none");
   }
 
   const body = contextEntries
     .map((entry) => formatReferenceWithCode(entry.ref, entry.content, "markdown"))
     .join("\n");
-  return `## Context\n\n${body}`;
+  return `${heading}\n\n${body}`;
 }
 
 /** Assembles the full editable prompt text from every composer choice. Pure
@@ -916,7 +1376,7 @@ export function buildPromptContextSection(contextMode, contextEntries, target) {
  * selected yet" edge case -- is expected to produce a complete, coherent
  * block of text; degrading gracefully rather than omitting a section is the
  * job of `describePromptTarget`/`buildPromptContextSection` above. */
-export function buildPromptText(options) {
+export function buildPromptText(options, locale = "en") {
   const {
     goal,
     target,
@@ -929,22 +1389,23 @@ export function buildPromptText(options) {
     contextEntries = [],
   } = options;
 
+  const goalKey = `goal.${goal}.instruction`;
   const parts = [
-    PROMPT_GOAL_INSTRUCTIONS[goal] || PROMPT_GOAL_INSTRUCTIONS.explain,
-    `Target: ${describePromptTarget(target, { checkedRefs, lineRefs })}.`,
-    describePromptOutput(output, filename),
+    tr(locale, MESSAGES.en[goalKey] !== undefined ? goalKey : "goal.explain.instruction"),
+    tr(locale, "prompt.targetLine", {
+      target: describePromptTarget(target, { checkedRefs, lineRefs }, locale),
+    }),
+    describePromptOutput(output, filename, locale),
   ];
 
   const trimmedExtra = (extraInstructions || "").trim();
   if (trimmedExtra) {
-    parts.push(`Additional instructions:\n${trimmedExtra}`);
+    parts.push(tr(locale, "prompt.additionalInstructions", { text: trimmedExtra }));
   }
 
-  parts.push(
-    "When referring to a specific location in the code, use the stable references shown on the page (@file:..., @dir:..., @lines:...) so it can be traced back precisely."
-  );
+  parts.push(tr(locale, "prompt.referenceNote"));
 
-  const contextSection = buildPromptContextSection(contextMode, contextEntries, target);
+  const contextSection = buildPromptContextSection(contextMode, contextEntries, target, locale);
   if (contextSection) parts.push(contextSection);
 
   return parts.join("\n\n");
@@ -1015,18 +1476,22 @@ export function formatWithThousandsSeparator(value) {
 
 /** Formats a [`computeSelectionStats`] result as the one line of text the
  * content toolbar displays. */
-export function formatSelectionStats(stats) {
+export function formatSelectionStats(stats, locale = "en") {
   const { fileCount, pendingCount, charCount, estimatedTokens, isLarge } = stats;
 
-  if (fileCount === 0) return "No files selected.";
+  if (fileCount === 0) return tr(locale, "stats.none");
 
-  const fileLabel = fileCount === 1 ? "1 file selected" : `${fileCount} files selected`;
-  const pendingSuffix = pendingCount > 0 ? ` (${pendingCount} still loading)` : "";
-  const base = `${fileLabel}${pendingSuffix} · ${formatWithThousandsSeparator(
-    charCount
-  )} characters · ~${formatWithThousandsSeparator(estimatedTokens)} tokens (rough estimate)`;
+  const fileLabel =
+    fileCount === 1 ? tr(locale, "stats.oneFile") : tr(locale, "stats.manyFiles", { count: fileCount });
+  const pendingSuffix = pendingCount > 0 ? tr(locale, "stats.pending", { count: pendingCount }) : "";
+  const base = tr(locale, "stats.base", {
+    files: fileLabel,
+    pending: pendingSuffix,
+    chars: formatWithThousandsSeparator(charCount),
+    tokens: formatWithThousandsSeparator(estimatedTokens),
+  });
 
-  return isLarge ? `${base} · ⚠ large selection` : base;
+  return isLarge ? `${base}${tr(locale, "stats.large")}` : base;
 }
 
 // ---- Search filter ----
@@ -1129,13 +1594,13 @@ async function openFile(path) {
   try {
     const response = await fetch(apiUrl(`/api/file?path=${encodeURIComponent(path)}`));
     if (!response.ok) {
-      state.fileContentCache.set(path, `(failed to load: HTTP ${response.status})`);
+      state.fileContentCache.set(path, t("file.loadFailedHttp", { status: response.status }));
     } else {
       const text = await response.text();
       state.fileContentCache.set(path, text);
     }
   } catch (err) {
-    state.fileContentCache.set(path, `(failed to load: ${err})`);
+    state.fileContentCache.set(path, t("file.loadFailed", { err }));
   }
 
   renderFilePanels();
@@ -1174,7 +1639,7 @@ function buildFilePanel(path) {
   toggle.className = "file-panel-toggle";
   toggle.textContent = collapsed ? "▸" : "▾";
   toggle.setAttribute("aria-expanded", String(!collapsed));
-  toggle.setAttribute("aria-label", collapsed ? "Expand file panel" : "Collapse file panel");
+  toggle.setAttribute("aria-label", collapsed ? t("filePanel.expand") : t("filePanel.collapse"));
   toggle.addEventListener("click", () => {
     if (state.collapsedPanels.has(path)) {
       state.collapsedPanels.delete(path);
@@ -1208,7 +1673,7 @@ function buildFilePanel(path) {
   actions.className = "file-panel-actions";
   actions.appendChild(
     buildCopyActionGroup(
-      "Copy",
+      t("copy.copy"),
       (button) => copyFileAs(path, "markdown", button),
       () => filePanelCopyMenuItems(path)
     )
@@ -1224,7 +1689,7 @@ function buildFilePanel(path) {
     code.className = "file-panel-code";
 
     if (!state.fileContentCache.has(path)) {
-      code.textContent = "Loading…";
+      code.textContent = t("file.loading");
     } else {
       buildCodeLines(code, path, state.fileContentCache.get(path));
     }
@@ -1487,7 +1952,7 @@ export async function copyTextToClipboard(text) {
     !navigator.clipboard ||
     typeof navigator.clipboard.writeText !== "function"
   ) {
-    return { ok: false, error: "Clipboard API is not available in this browser." };
+    return { ok: false, error: t("clipboard.unavailable") };
   }
 
   try {
@@ -1512,7 +1977,9 @@ let copyToastTimeoutId = null;
  * on-button cue uses. */
 function showCopyToast(ok, error) {
   if (!el.copyToast) return;
-  el.copyToast.textContent = ok ? "Copied to clipboard." : `Copy failed: ${error || "unknown error"}`;
+  el.copyToast.textContent = ok
+    ? t("toast.copied")
+    : t("toast.copyFailed", { error: error || t("toast.unknownError") });
   el.copyToast.classList.toggle("copy-toast-success", ok);
   el.copyToast.classList.toggle("copy-toast-failure", !ok);
   el.copyToast.hidden = false;
@@ -1547,10 +2014,10 @@ function flashCopyFeedback(button, ok, error) {
   const originalLabel = button.dataset.copyOriginalLabel ?? button.textContent;
   button.dataset.copyOriginalLabel = originalLabel;
 
-  button.textContent = ok ? "Copied!" : "Copy failed";
+  button.textContent = ok ? t("copy.copied") : t("copy.failed");
   button.classList.toggle("copy-success", ok);
   button.classList.toggle("copy-failure", !ok);
-  button.title = ok ? "" : error || "Copy failed";
+  button.title = ok ? "" : error || t("copy.failed");
   button.disabled = true;
 
   window.setTimeout(() => {
@@ -1586,7 +2053,11 @@ export async function fetchFileContents(paths) {
     paths.map(async (path) => {
       const response = await fetch(apiUrl(`/api/file?path=${encodeURIComponent(path)}`));
       if (!response.ok) {
-        throw new Error(`failed to load "${path}": HTTP ${response.status}`);
+        // Technical detail only (path + HTTP status): the user-facing
+        // "copy failed" prefix is localized by `toast.copyFailed` /
+        // `file.loadFailed` at the display site (issue #22), so this message
+        // must not carry its own English prose or it would leak past them.
+        throw new Error(`"${path}": HTTP ${response.status}`);
       }
       const content = await response.text();
       return { path, content };
@@ -1660,7 +2131,7 @@ function buildCopyActionGroup(primaryLabel, onPrimary, getMenuItems) {
   menuButton.type = "button";
   menuButton.className = "copy-menu-toggle";
   menuButton.textContent = "⋯";
-  menuButton.setAttribute("aria-label", "More copy options");
+  menuButton.setAttribute("aria-label", t("copy.moreOptions"));
   menuButton.setAttribute("aria-expanded", "false");
   wrap.appendChild(menuButton);
 
@@ -1734,19 +2205,19 @@ async function copyReferenceWithCode(path, selection, button) {
  * `path` has an active line selection -- a reference-plus-code copy. */
 function filePanelCopyMenuItems(path) {
   const items = ["plain", "xml", "diff"].map((format) => ({
-    label: `Copy file as ${formatLabel(format)}`,
+    label: t("menu.copyFileAs", { format: formatLabel(format) }),
     onClick: (button) => copyFileAs(path, format, button),
   }));
 
   items.push({
-    label: "Copy reference only",
+    label: t("menu.copyReferenceOnly"),
     onClick: (button) => copyToClipboardWithFeedback(formatFileRef(path), button),
   });
 
   const selection = state.lineSelections.get(path);
   if (selection) {
     items.push({
-      label: "Copy reference + code",
+      label: t("menu.copyReferenceAndCode"),
       onClick: (button) => copyReferenceWithCode(path, selection, button),
     });
   }
@@ -1808,13 +2279,13 @@ function globalCopyMenuItems() {
   const hasChecked = state.checked.size > 0;
 
   const items = ["plain", "xml", "diff"].map((format) => ({
-    label: `Copy all checked as ${formatLabel(format)}`,
+    label: t("menu.copyAllCheckedAs", { format: formatLabel(format) }),
     disabled: !hasChecked,
     onClick: (button) => copyAllChecked(format, button),
   }));
 
   items.push({
-    label: "Copy file tree",
+    label: t("menu.copyFileTree"),
     onClick: (button) => copyFileTree(button),
   });
 
@@ -1831,19 +2302,20 @@ function globalCopyMenuItems() {
  * toolbar has no other hook into. */
 function renderContentToolbar() {
   const count = state.openFiles.length;
-  el.contentToolbarCount.textContent = count === 1 ? "1 file open" : `${count} files open`;
+  el.contentToolbarCount.textContent =
+    count === 1 ? t("toolbar.oneFileOpen") : t("toolbar.manyFilesOpen", { count });
 
   // Order doesn't matter for computeSelectionStats's sums, so skip the sort
   // this function's other Array.from(state.checked) call sites need for
   // deterministic output ordering -- this one has no such requirement, and
   // this function runs on every single file-panel render.
   const stats = computeSelectionStats(Array.from(state.checked), state.fileContentCache);
-  el.contentToolbarStats.textContent = formatSelectionStats(stats);
+  el.contentToolbarStats.textContent = formatSelectionStats(stats, getLocale());
   el.contentToolbarStats.classList.toggle("content-toolbar-stats-warning", stats.isLarge);
 
   el.contentToolbarActions.innerHTML = "";
   const group = buildCopyActionGroup(
-    "Copy all checked",
+    t("toolbar.copyAllChecked"),
     (button) => copyAllChecked("markdown", button),
     globalCopyMenuItems
   );
@@ -1911,7 +2383,7 @@ function renderRecentList() {
   if (list.length === 0) {
     const li = document.createElement("li");
     li.className = "recent-empty";
-    li.textContent = "No recently opened files yet.";
+    li.textContent = t("recent.empty");
     el.recentList.appendChild(li);
     return;
   }
@@ -1932,7 +2404,7 @@ function renderRecentList() {
     removeButton.type = "button";
     removeButton.className = "recent-remove";
     removeButton.textContent = "✕";
-    removeButton.setAttribute("aria-label", `Remove ${path} from recently opened`);
+    removeButton.setAttribute("aria-label", t("recent.removeAria", { path }));
     removeButton.addEventListener("click", () => removeFromRecent(path));
     li.appendChild(removeButton);
 
@@ -2014,7 +2486,25 @@ export function clamp(value, min, max) {
 // prompt" is clicked again (issue #7 acceptance criterion).
 
 function populateSelect(select, options) {
-  select.append(...options.map((option) => new Option(option.label, option.value)));
+  select.append(...options.map((option) => new Option(t(option.labelKey), option.value)));
+}
+
+/** Clears and re-fills every composer `<select>` with the current locale's
+ * option labels, preserving each select's currently chosen value (the option
+ * `value`s never change between locales, only their display labels). */
+function repopulatePromptSelects() {
+  const selects = [
+    [el.promptGoal, PROMPT_GOALS],
+    [el.promptTarget, PROMPT_TARGETS],
+    [el.promptOutput, PROMPT_OUTPUTS],
+    [el.promptContextMode, PROMPT_CONTEXT_MODES],
+  ];
+  for (const [select, options] of selects) {
+    const current = select.value;
+    select.innerHTML = "";
+    populateSelect(select, options);
+    if (options.some((option) => option.value === current)) select.value = current;
+  }
 }
 
 function wirePromptComposer() {
@@ -2052,11 +2542,19 @@ function wirePromptComposer() {
     el.promptComposerBody.hidden = !collapsed;
     el.promptComposerToggle.textContent = collapsed ? "▾" : "▸";
     el.promptComposerToggle.setAttribute("aria-expanded", String(collapsed));
-    el.promptComposerToggle.setAttribute(
-      "aria-label",
-      collapsed ? "Collapse prompt composer" : "Expand prompt composer"
-    );
+    updateComposerToggleAria();
   });
+}
+
+/** Sets the composer toggle's `aria-label` from its current expanded/collapsed
+ * state in the active locale. Kept separate from the click handler so a locale
+ * switch can refresh the label without toggling the panel. */
+function updateComposerToggleAria() {
+  const expanded = !el.promptComposerBody.hidden;
+  el.promptComposerToggle.setAttribute(
+    "aria-label",
+    expanded ? t("promptComposer.collapse") : t("promptComposer.expand")
+  );
 }
 
 function updatePromptFilenameVisibility() {
@@ -2084,7 +2582,14 @@ async function resolveFileContents(paths) {
         const [entry] = await fetchFileContents([path]);
         return entry;
       } catch (err) {
-        return { path, content: `(failed to load: ${err && err.message ? err.message : err})` };
+        // Reuse the same localized placeholder the single-file open path uses
+        // (issue #22), so a failed embed never leaks an English literal into
+        // the generated prompt. The technical detail (path/HTTP, from
+        // `fetchFileContents`) stays as-is in `{err}`.
+        return {
+          path,
+          content: tr(getLocale(), "file.loadFailed", { err: err && err.message ? err.message : err }),
+        };
       }
     })
   );
@@ -2130,33 +2635,47 @@ async function gatherFullFileEntries(paths) {
  * repository, a clean working tree, or the request itself failing -- which
  * must NOT be wrapped in a diff-language code fence the way real diff text
  * is, or a plain sentence would visually read as malformed diff output. */
+/** Pure `/api/diff` response -> `{ content, isDiff }` resolver, split out of
+ * `gatherDiffEntries` so the localized status prose (issue #22) is testable
+ * without a network round trip. `data` is the parsed response (`{ isGitRepo,
+ * diff }`); `locale` selects the language of the plain-text status lines. Real
+ * diff text (`isDiff: true`) is returned verbatim -- it is not translatable and
+ * gets rendered inside a `diff`-tagged code fence by `buildPromptContextSection`
+ * -- while the "not a repo"/"clean tree" cases become localized prose
+ * (`isDiff: false`) that must NOT be fenced. Fetch/HTTP failures are handled by
+ * `gatherDiffEntries` itself, since they aren't derivable from `data`. */
+export function describeGitDiff(data, locale = "en") {
+  if (!data.isGitRepo) {
+    return { content: tr(locale, "diff.status.notRepo"), isDiff: false };
+  }
+  if (!data.diff) {
+    return { content: tr(locale, "diff.status.clean"), isDiff: false };
+  }
+  return { content: data.diff, isDiff: true };
+}
+
 async function gatherDiffEntries() {
+  const locale = getLocale();
   try {
     const response = await fetch(apiUrl("/api/diff"));
     if (!response.ok) {
       return [
-        { ref: "@diff", content: `(failed to load the Git diff: HTTP ${response.status})`, isDiff: false },
-      ];
-    }
-    const data = await response.json();
-    if (!data.isGitRepo) {
-      return [
         {
           ref: "@diff",
-          content: "(This directory is not a Git repository, so there is no diff to show.)",
+          content: tr(locale, "diff.status.loadFailed", { detail: `HTTP ${response.status}` }),
           isDiff: false,
         },
       ];
     }
-    if (!data.diff) {
-      return [{ ref: "@diff", content: "(No local changes: the working tree is clean.)", isDiff: false }];
-    }
-    return [{ ref: "@diff", content: data.diff, isDiff: true }];
+    const { content, isDiff } = describeGitDiff(await response.json(), locale);
+    return [{ ref: "@diff", content, isDiff }];
   } catch (err) {
     return [
       {
         ref: "@diff",
-        content: `(failed to load the Git diff: ${err && err.message ? err.message : err})`,
+        content: tr(locale, "diff.status.loadFailed", {
+          detail: err && err.message ? err.message : String(err),
+        }),
         isDiff: false,
       },
     ];
@@ -2199,21 +2718,96 @@ async function generatePrompt() {
     contextEntries = await gatherFullFileEntries(checkedPaths);
   }
 
-  el.promptResult.value = buildPromptText({
-    goal,
-    target,
-    output,
-    contextMode,
-    filename,
-    extraInstructions,
-    checkedRefs,
-    lineRefs,
-    contextEntries,
+  const text = buildPromptText(
+    {
+      goal,
+      target,
+      output,
+      contextMode,
+      filename,
+      extraInstructions,
+      checkedRefs,
+      lineRefs,
+      contextEntries,
+    },
+    getLocale()
+  );
+  el.promptResult.value = text;
+  state.lastGeneratedPrompt = text;
+  state.promptGenerated = true;
+}
+
+// ---- Language switching (issue #22) ----
+//
+// One active locale drives both the static chrome (filled from `data-i18n*`
+// attributes in the HTML) and every JS-rendered label. Switching languages
+// re-applies both, re-populates the composer's `<select>` option labels, and
+// -- only if the generated prompt is still exactly what the last
+// `generatePrompt()` produced (i.e. not hand-edited) -- regenerates it in the
+// new language so a user's manual edits are never silently clobbered.
+
+/** Walks the `data-i18n` family of attributes on `root` and fills each
+ * element's text / placeholder / aria-label / title from the active locale.
+ * Idempotent, so it's safe to call on every locale switch. */
+function applyStaticI18n(root = document) {
+  root.querySelectorAll("[data-i18n]").forEach((node) => {
+    node.textContent = t(node.dataset.i18n);
   });
+  root.querySelectorAll("[data-i18n-placeholder]").forEach((node) => {
+    node.setAttribute("placeholder", t(node.dataset.i18nPlaceholder));
+  });
+  root.querySelectorAll("[data-i18n-aria]").forEach((node) => {
+    node.setAttribute("aria-label", t(node.dataset.i18nAria));
+  });
+  root.querySelectorAll("[data-i18n-title]").forEach((node) => {
+    node.setAttribute("title", t(node.dataset.i18nTitle));
+  });
+}
+
+function wireLocaleSwitcher() {
+  if (!el.localeSelect) return;
+  el.localeSelect.addEventListener("change", () => setLocale(el.localeSelect.value));
+}
+
+/** Reflects the active locale onto the switcher control (so a stored/auto
+ * choice shows as selected on load, and a programmatic switch stays in sync). */
+function syncLocaleControl() {
+  if (el.localeSelect) el.localeSelect.value = getLocale();
+}
+
+/** If a prompt was previously generated and hasn't been hand-edited since,
+ * regenerates it in the current locale; otherwise leaves the textarea alone so
+ * manual edits (or an intentionally blank result) survive the language switch. */
+function regeneratePromptIfUnedited() {
+  if (state.promptGenerated && el.promptResult.value === state.lastGeneratedPrompt) {
+    // Fire-and-forget: generatePrompt is async (it may fetch embed content),
+    // and it writes the textarea itself when it resolves.
+    generatePrompt();
+  }
+}
+
+/** Re-renders every locale-dependent surface after the active locale changes:
+ * static chrome, the composer selects, all dynamically built lists/panels, and
+ * (when safe) the generated prompt. */
+function renderAll() {
+  if (typeof document === "undefined") return;
+  document.documentElement.lang = getLocale();
+  applyStaticI18n();
+  syncLocaleControl();
+  repopulatePromptSelects();
+  updatePromptFilenameVisibility();
+  updateComposerToggleAria();
+  renderTree();
+  renderRootBasename();
+  renderRecentList();
+  renderContentToolbar();
+  renderFilePanels();
+  regeneratePromptIfUnedited();
 }
 
 if (typeof document !== "undefined") {
   el = {
+    localeSelect: document.getElementById("locale-select"),
     rootBasename: document.getElementById("root-basename"),
     rootPath: document.getElementById("root-path"),
     treeRoot: document.getElementById("tree-root"),

@@ -10,6 +10,42 @@ dependency and no build step. A persistent notice at the top of the page
 restates this README's disclaimer: content copied from here may be pasted
 into a third-party AI, and file content can carry prompt-injection text.
 
+## Language (English / Japanese)
+
+The UI ships in two languages -- English (the source and fallback) and
+Japanese -- selectable from a small language toggle at the top of the
+explorer pane. A single active locale drives **both** the interface chrome
+(labels, buttons, preset names, the security notice, toasts, aria-labels) and
+the text of the prompt the composer generates, so switching languages
+localizes everything at once, not just the surrounding UI.
+
+The active locale is resolved on load in this order:
+
+1. A previously stored choice in `localStorage` (`pbsa-locale`) wins.
+2. Otherwise `navigator.language` is consulted: a value starting with `ja`
+   auto-selects Japanese; anything else falls back to English.
+
+Choosing a language from the toggle re-renders the whole UI immediately and
+persists the choice to `localStorage` (best-effort -- a private-browsing or
+storage-disabled context still switches for the session, it just won't be
+remembered). Every user-visible string lives in a single message catalog
+(`MESSAGES` in `assets/app.js`) keyed by meaning; a key missing a Japanese
+translation falls back to the English string rather than rendering blank, so
+a partial translation can never produce an empty label.
+
+Switching the language also updates the generated prompt: if the prompt in
+the result textarea is still exactly what the composer last generated (i.e.
+untouched), it is regenerated in the new language; if it has been hand-edited,
+it is left as-is so a language switch never discards manual edits.
+
+This "localize everything" rule covers the transient status prose too, not just
+the fixed labels: the Git-diff target's status lines ("no local changes", "not
+a Git repository", a failed diff fetch) and a file/tree/root load-failure
+message are all drawn from the catalog and re-rendered on a language switch, so
+none of them can leave an English string stranded (or blank the tree) after the
+user changes languages. Only the embedded technical detail -- a path, an HTTP
+status -- stays verbatim, since it isn't language-specific.
+
 ## Line numbers, stable references, and URL navigation
 
 Each open file panel shows 1-based line numbers down its left edge; they are

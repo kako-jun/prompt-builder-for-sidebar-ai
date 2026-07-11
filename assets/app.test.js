@@ -39,11 +39,15 @@ import {
   describePromptOutput,
   buildPromptContextSection,
   buildPromptText,
+  describeGitDiff,
   formatInlineCode,
   sliceSelectedLines,
   computeSelectionStats,
   formatWithThousandsSeparator,
   formatSelectionStats,
+  tr,
+  substituteParams,
+  detectInitialLocale,
 } from "./app.js";
 
 // ---- extensionOf ----
@@ -1726,10 +1730,19 @@ describe("buildPromptContextSection", () => {
     }
   });
 
-  test("target 'diff' falls back to an explanatory placeholder when no entry is given at all", () => {
+  test("target 'diff' falls back to the (localized) clean-tree placeholder when no entry is given at all", () => {
+    // The `!entry` branch is defensively unreachable in production, so it reuses
+    // the clean-tree wording rather than carrying its own separate string.
     for (const mode of ["excerpts", "full"]) {
-      assert.match(buildPromptContextSection(mode, [], "diff"), /No Git diff information is available/);
-      assert.match(buildPromptContextSection(mode, undefined, "diff"), /No Git diff information is available/);
+      assert.match(buildPromptContextSection(mode, [], "diff"), /No local changes: the working tree is clean/);
+      assert.match(
+        buildPromptContextSection(mode, undefined, "diff"),
+        /No local changes: the working tree is clean/
+      );
+      assert.equal(
+        buildPromptContextSection(mode, [], "diff", "ja"),
+        "（ローカルの変更はありません。作業ツリーはクリーンです。）"
+      );
     }
   });
 
@@ -1740,6 +1753,121 @@ describe("buildPromptContextSection", () => {
       "diff"
     );
     assert.match(section, /````diff\n/);
+  });
+});
+
+describe("i18n diff/file-load status keys (issue #22, should-1/nit-1)", () => {
+  const DIFF_STATUS_KEYS = ["diff.status.notRepo", "diff.status.clean", "diff.status.loadFailed"];
+
+  test("every new diff-status key resolves in both en and ja (no blank, no en fallback for ja)", () => {
+    for (const key of DIFF_STATUS_KEYS) {
+      const en = tr("en", key, { detail: "X" });
+      const ja = tr("ja", key, { detail: "X" });
+      // A missing key would fall back to the key string itself.
+      assert.notEqual(en, key, `en missing ${key}`);
+      assert.notEqual(ja, key, `ja missing ${key}`);
+      assert.notEqual(en, "");
+      assert.notEqual(ja, "");
+      // A ja key that merely fell back to en would compare equal.
+      assert.notEqual(ja, en, `ja should differ from en for ${key}`);
+    }
+  });
+
+  test("clean-tree / not-a-repo status strings are the expected prose in each locale", () => {
+    assert.equal(tr("en", "diff.status.clean"), "(No local changes: the working tree is clean.)");
+    assert.equal(tr("ja", "diff.status.clean"), "（ローカルの変更はありません。作業ツリーはクリーンです。）");
+    assert.equal(
+      tr("en", "diff.status.notRepo"),
+      "(This directory is not a Git repository, so there is no diff to show.)"
+    );
+    assert.equal(
+      tr("ja", "diff.status.notRepo"),
+      "（このディレクトリは Git リポジトリではないため、表示できる差分はありません。）"
+    );
+  });
+
+  test("loadFailed keeps the technical {detail} verbatim while localizing the surrounding prose", () => {
+    assert.equal(
+      tr("en", "diff.status.loadFailed", { detail: "HTTP 500" }),
+      "(failed to load the Git diff: HTTP 500)"
+    );
+    assert.equal(
+      tr("ja", "diff.status.loadFailed", { detail: "HTTP 500" }),
+      "（Git 差分の取得に失敗しました: HTTP 500）"
+    );
+  });
+
+  test("file.loadFailed (reused for embed failures) exists in both locales and carries {err} verbatim", () => {
+    assert.equal(tr("en", "file.loadFailed", { err: '"a.js": HTTP 404' }), '(failed to load: "a.js": HTTP 404)');
+    assert.equal(tr("ja", "file.loadFailed", { err: '"a.js": HTTP 404' }), "（読み込みに失敗しました: \"a.js\": HTTP 404）");
+  });
+});
+
+describe("describeGitDiff (issue #22, should-1)", () => {
+  test("returns real diff text verbatim as isDiff:true, untranslated, in any locale", () => {
+    const diff = "diff --git a/x b/x\n+added";
+    for (const locale of ["en", "ja"]) {
+      assert.deepEqual(describeGitDiff({ isGitRepo: true, diff }, locale), { content: diff, isDiff: true });
+    }
+  });
+
+  test("clean working tree resolves to localized prose (isDiff:false), no English literal in ja", () => {
+    assert.deepEqual(describeGitDiff({ isGitRepo: true, diff: "" }, "en"), {
+      content: "(No local changes: the working tree is clean.)",
+      isDiff: false,
+    });
+    const ja = describeGitDiff({ isGitRepo: true, diff: "" }, "ja");
+    assert.equal(ja.content, "（ローカルの変更はありません。作業ツリーはクリーンです。）");
+    assert.equal(ja.isDiff, false);
+    assert.doesNotMatch(ja.content, /No local changes|working tree|clean/);
+  });
+
+  test("non-Git directory resolves to localized prose (isDiff:false), no English literal in ja", () => {
+    const ja = describeGitDiff({ isGitRepo: false, diff: "" }, "ja");
+    assert.equal(ja.content, "（このディレクトリは Git リポジトリではないため、表示できる差分はありません。）");
+    assert.equal(ja.isDiff, false);
+    assert.doesNotMatch(ja.content, /not a Git repository|diff to show/);
+  });
+
+  test("defaults to English when no locale is passed", () => {
+    assert.equal(
+      describeGitDiff({ isGitRepo: false, diff: "" }).content,
+      "(This directory is not a Git repository, so there is no diff to show.)"
+    );
+  });
+});
+
+describe("buildPromptText — diff-status prose is localized end-to-end (issue #22, should-1 regression)", () => {
+  const baseDiffOptions = (contextEntries) => ({
+    goal: "explain",
+    target: "diff",
+    output: "concise",
+    contextMode: "full",
+    filename: "",
+    extraInstructions: "",
+    checkedRefs: [],
+    lineRefs: [],
+    contextEntries,
+  });
+
+  test("ja prompt for a clean working tree carries the ja status sentence and no English diff-status literal", () => {
+    // Content is what gatherDiffEntries -> describeGitDiff produces for a clean
+    // tree in ja; buildPromptText must pass it through without English leaking.
+    const jaClean = describeGitDiff({ isGitRepo: true, diff: "" }, "ja");
+    const text = buildPromptText(baseDiffOptions([{ ref: "@diff", ...jaClean }]), "ja");
+    assert.match(text, /（ローカルの変更はありません。作業ツリーはクリーンです。）/);
+    assert.doesNotMatch(text, /No local changes/);
+    assert.doesNotMatch(text, /working tree is clean/);
+    assert.doesNotMatch(text, /is not a Git repository/);
+    assert.doesNotMatch(text, /failed to load the Git diff/);
+  });
+
+  test("ja prompt for a non-Git directory carries the ja status sentence and no English diff-status literal", () => {
+    const jaNotRepo = describeGitDiff({ isGitRepo: false, diff: "" }, "ja");
+    const text = buildPromptText(baseDiffOptions([{ ref: "@diff", ...jaNotRepo }]), "ja");
+    assert.match(text, /Git リポジトリではないため/);
+    assert.doesNotMatch(text, /not a Git repository/);
+    assert.doesNotMatch(text, /No local changes/);
   });
 });
 
@@ -1852,5 +1980,361 @@ describe("buildPromptText", () => {
     assert.doesNotMatch(text, /## Context/);
     assert.doesNotMatch(text, /diff --git a\/x b\/x/);
     assert.match(text, /Page context only/);
+  });
+});
+
+// ---- i18n: tr (message lookup + fallback chain) ----
+
+describe("tr", () => {
+  test("returns the Japanese string for a key present in the 'ja' catalog", () => {
+    assert.equal(tr("ja", "stats.none"), "ファイルが選択されていません。");
+    assert.equal(tr("ja", "composer.generate"), "プロンプトを生成");
+  });
+
+  test("returns the English string for the 'en' locale", () => {
+    assert.equal(tr("en", "stats.none"), "No files selected.");
+    assert.equal(tr("en", "composer.generate"), "Generate prompt");
+  });
+
+  test("falls back to English for an unsupported locale (its table is missing entirely)", () => {
+    // MESSAGES has no "fr" table, so the lookup drops to the English one.
+    assert.equal(tr("fr", "stats.none"), "No files selected.");
+    assert.equal(tr("de", "composer.generate"), "Generate prompt");
+  });
+
+  test("returns the key itself -- never an empty string -- for a key missing from every catalog", () => {
+    // The `?? MESSAGES.en[key] ?? key` tail guarantees a missing translation
+    // renders as the (visible) key, so a forgotten string is obvious rather
+    // than silently blank. The en/ja catalogs are currently perfectly
+    // mirrored, so an unknown key is the only way to reach this branch.
+    const unknown = "this.key.does.not.exist";
+    assert.equal(tr("ja", unknown), unknown);
+    assert.equal(tr("en", unknown), unknown);
+    assert.notEqual(tr("ja", unknown), "");
+    assert.notEqual(tr("en", unknown), "");
+  });
+
+  test("substitutes {name}-style params in the looked-up string", () => {
+    assert.equal(tr("ja", "stats.manyFiles", { count: 3 }), "3 ファイル選択中");
+    assert.equal(
+      tr("en", "output.file.instruction", { name: "spec.md" }),
+      "Generate the response as a downloadable file named spec.md."
+    );
+  });
+
+  test("inserts a param value containing regex-replacement tokens ($&, $1) verbatim through the public tr path", () => {
+    // If substitution used a string replacement, "$&" would expand to the
+    // matched "{count}" and "$1" to a capture group. It must stay literal.
+    assert.equal(tr("en", "stats.manyFiles", { count: "$&" }), "$& files selected");
+    assert.equal(tr("ja", "stats.manyFiles", { count: "$1" }), "$1 ファイル選択中");
+  });
+});
+
+// ---- i18n: substituteParams (placeholder replacement semantics) ----
+
+describe("substituteParams", () => {
+  test("replaces a {token} with the matching param value", () => {
+    assert.equal(substituteParams("Hello {name}!", { name: "world" }), "Hello world!");
+  });
+
+  test("inserts a value containing '$&' or '$1' verbatim (no regex-replacement expansion)", () => {
+    // With String.prototype.replace(pattern, string), "$&" would re-insert the
+    // matched "{name}" and "$1" a capture group; the function replacement used
+    // here makes both literal.
+    assert.equal(substituteParams("x {name} y", { name: "$&" }), "x $& y");
+    assert.equal(substituteParams("x {name} y", { name: "$1" }), "x $1 y");
+    assert.equal(substituteParams("x {name} y", { name: "$$" }), "x $$ y");
+  });
+
+  test("does not re-substitute a value that itself contains a {placeholder} token", () => {
+    // The template is scanned exactly once; a "{b}" produced by substituting
+    // {a} is NOT expanded again even when a `b` param is also present.
+    assert.equal(substituteParams("{a}", { a: "{b}", b: "B" }), "{b}");
+    assert.equal(substituteParams("start {a} end", { a: "{name}" }), "start {name} end");
+  });
+
+  test("leaves an unmatched {placeholder} in place when its param is missing", () => {
+    assert.equal(substituteParams("Hi {missing}", {}), "Hi {missing}");
+    assert.equal(substituteParams("Hi {missing}", { other: "x" }), "Hi {missing}");
+    assert.equal(
+      substituteParams("{present} {missing}", { present: "P" }),
+      "P {missing}"
+    );
+  });
+
+  test("returns the template unchanged when params is null/undefined", () => {
+    assert.equal(substituteParams("{a} literal", undefined), "{a} literal");
+    assert.equal(substituteParams("{a} literal", null), "{a} literal");
+  });
+});
+
+// ---- i18n: buildPromptText locale support + English backward compatibility ----
+
+describe("buildPromptText - i18n", () => {
+  test("renders the Japanese target line, goal, output and reference note for locale 'ja'", () => {
+    const text = buildPromptText(
+      {
+        goal: "explain",
+        target: "page",
+        output: "concise",
+        contextMode: "page",
+      },
+      "ja"
+    );
+    // Japanese "Target:" line.
+    assert.match(text, /対象: /);
+    assert.match(text, /。/);
+    // Japanese goal instruction (explain).
+    assert.match(text, /このコードが何をするか、どのように動作するかを説明してください。/);
+    // Japanese output instruction (concise).
+    assert.match(text, /簡潔な回答で答えてください。/);
+    // Japanese reference-convention note.
+    assert.match(text, /安定参照/);
+    // And none of the English equivalents leaked in.
+    assert.doesNotMatch(text, /Target:/);
+    assert.doesNotMatch(text, /Respond with a concise answer/);
+  });
+
+  test("embeds Japanese target phrases for 'checked' and 'diff' targets", () => {
+    const checked = buildPromptText(
+      {
+        goal: "review",
+        target: "checked",
+        output: "concise",
+        contextMode: "page",
+        checkedRefs: ["@file:src/app.js"],
+      },
+      "ja"
+    );
+    assert.match(checked, /対象: チェックしたファイル: @file:src\/app\.js。/);
+
+    const diff = buildPromptText(
+      { goal: "review", target: "diff", output: "concise", contextMode: "page" },
+      "ja"
+    );
+    assert.match(diff, /このプロジェクトの現在のGit差分/);
+  });
+
+  test("omitting the locale is byte-identical to passing 'en' (backward compatibility)", () => {
+    // A representative spread of option shapes, including the branches that
+    // pull in extra instructions, a filename, and embedded diff/context.
+    const optionSets = [
+      { goal: "explain", target: "page", output: "concise", contextMode: "page" },
+      {
+        goal: "plan",
+        target: "checked",
+        output: "file",
+        contextMode: "full",
+        filename: "plan.md",
+        extraInstructions: "  Focus on error handling.  ",
+        checkedRefs: ["@file:src/app.js", "@file:src/lib.js"],
+        contextEntries: [{ ref: "@file:src/app.js", content: "console.log(1);" }],
+      },
+      {
+        goal: "review",
+        target: "diff",
+        output: "report",
+        contextMode: "excerpts",
+        contextEntries: [{ content: "diff --git a/x b/x\n+added", isDiff: true }],
+      },
+      {
+        goal: "locate",
+        target: "lines",
+        output: "issue",
+        contextMode: "excerpts",
+        lineRefs: ["@lines:a.js#L1-L2", "@lines:b.js#L3"],
+        contextEntries: [{ ref: "@lines:a.js#L1-L2", content: "const a = 1;" }],
+      },
+    ];
+    for (const options of optionSets) {
+      assert.equal(buildPromptText(options), buildPromptText(options, "en"));
+    }
+  });
+
+  test("the Japanese rendering actually differs from the English one (sanity: locale is wired through)", () => {
+    const options = {
+      goal: "explain",
+      target: "page",
+      output: "concise",
+      contextMode: "page",
+      extraInstructions: "note",
+    };
+    assert.notEqual(buildPromptText(options, "ja"), buildPromptText(options, "en"));
+  });
+});
+
+// ---- i18n: describePromptOutput Japanese fallback ----
+
+describe("describePromptOutput - i18n", () => {
+  test("falls back to the Japanese 'concise' instruction for an unrecognized output", () => {
+    // Mirrors the English fallback test, but for locale 'ja'.
+    assert.equal(
+      describePromptOutput("bogus", undefined, "ja"),
+      describePromptOutput("concise", undefined, "ja")
+    );
+    assert.equal(describePromptOutput("bogus", undefined, "ja"), "簡潔な回答で答えてください。");
+  });
+
+  test("embeds a given filename in the Japanese 'file' instruction", () => {
+    assert.equal(
+      describePromptOutput("file", "plan.md", "ja"),
+      "回答を `plan.md` という名前のダウンロード可能なファイルとして生成してください。"
+    );
+  });
+});
+
+// ---- i18n: formatSelectionStats Japanese ----
+
+describe("formatSelectionStats - i18n", () => {
+  test("reports the Japanese empty-selection message", () => {
+    const stats = computeSelectionStats([], new Map());
+    assert.equal(formatSelectionStats(stats, "ja"), "ファイルが選択されていません。");
+  });
+
+  test("uses Japanese singular phrasing for exactly one file", () => {
+    const stats = computeSelectionStats(["a.js"], new Map([["a.js", "abcd"]]));
+    assert.match(formatSelectionStats(stats, "ja"), /^1 ファイル選択中/);
+  });
+
+  test("uses Japanese plural phrasing for more than one file", () => {
+    const stats = computeSelectionStats(
+      ["a.js", "b.js"],
+      new Map([
+        ["a.js", "ab"],
+        ["b.js", "cd"],
+      ])
+    );
+    assert.match(formatSelectionStats(stats, "ja"), /^2 ファイル選択中/);
+  });
+
+  test("notes the Japanese pending count when some checked files haven't loaded yet", () => {
+    const stats = computeSelectionStats(["a.js", "b.js"], new Map([["a.js", "abcd"]]));
+    assert.match(formatSelectionStats(stats, "ja"), /（1 件読み込み中）/);
+  });
+
+  test("appends the Japanese large-selection warning only when isLarge is true", () => {
+    const small = computeSelectionStats(["a.js"], new Map([["a.js", "abcd"]]));
+    assert.doesNotMatch(formatSelectionStats(small, "ja"), /選択が大きすぎます/);
+
+    const large = computeSelectionStats(["a.js"], new Map([["a.js", "x".repeat(200_001)]]));
+    assert.match(formatSelectionStats(large, "ja"), /· ⚠ 選択が大きすぎます$/);
+  });
+});
+
+// ---- i18n: detectInitialLocale (stored choice vs navigator, resilient to failures) ----
+
+// detectInitialLocale reads the ambient `localStorage`/`navigator` globals.
+// Node has a built-in (getter-only but configurable) `navigator` and no
+// `localStorage`, so each case runs with those globals temporarily swapped and
+// then fully restored, keeping the cases isolated from each other.
+function withLocaleGlobals({ localStorage, navigator }, fn) {
+  const hadLS = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+  const hadNav = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+  const setOrDelete = (name, value) => {
+    if (value === undefined) {
+      delete globalThis[name];
+    } else {
+      Object.defineProperty(globalThis, name, {
+        value,
+        configurable: true,
+        writable: true,
+      });
+    }
+  };
+  const restore = (name, desc) => {
+    if (desc) Object.defineProperty(globalThis, name, desc);
+    else delete globalThis[name];
+  };
+  setOrDelete("localStorage", localStorage);
+  setOrDelete("navigator", navigator);
+  try {
+    return fn();
+  } finally {
+    restore("localStorage", hadLS);
+    restore("navigator", hadNav);
+  }
+}
+
+/** A localStorage stub returning `value` for the locale key (and null otherwise). */
+function storageReturning(value) {
+  return { getItem: (key) => (key === "pbsa-locale" ? value : null) };
+}
+
+const throwingStorage = {
+  getItem() {
+    throw new Error("SecurityError: storage is disabled");
+  },
+};
+
+describe("detectInitialLocale", () => {
+  test("a valid stored choice wins over navigator.language", () => {
+    const result = withLocaleGlobals(
+      { localStorage: storageReturning("en"), navigator: { language: "ja-JP" } },
+      detectInitialLocale
+    );
+    assert.equal(result, "en");
+  });
+
+  test("navigator.language starting with 'ja' auto-selects Japanese when nothing is stored", () => {
+    const result = withLocaleGlobals(
+      { localStorage: storageReturning(null), navigator: { language: "ja-JP" } },
+      detectInitialLocale
+    );
+    assert.equal(result, "ja");
+  });
+
+  test("a stored 'ja' choice is honored even with no navigator at all", () => {
+    const result = withLocaleGlobals(
+      { localStorage: storageReturning("ja"), navigator: undefined },
+      detectInitialLocale
+    );
+    assert.equal(result, "ja");
+  });
+
+  test("falls back to English when nothing is stored and navigator.language is non-Japanese", () => {
+    const result = withLocaleGlobals(
+      { localStorage: storageReturning(null), navigator: { language: "en-US" } },
+      detectInitialLocale
+    );
+    assert.equal(result, "en");
+  });
+
+  test("ignores a stored value that isn't a supported locale and falls through to navigator", () => {
+    const result = withLocaleGlobals(
+      { localStorage: storageReturning("fr"), navigator: { language: "ja-JP" } },
+      detectInitialLocale
+    );
+    assert.equal(result, "ja");
+  });
+
+  test("does not throw and returns 'en' when localStorage access throws (private browsing)", () => {
+    assert.doesNotThrow(() =>
+      withLocaleGlobals(
+        { localStorage: throwingStorage, navigator: { language: "en-US" } },
+        detectInitialLocale
+      )
+    );
+    const result = withLocaleGlobals(
+      { localStorage: throwingStorage, navigator: { language: "en-US" } },
+      detectInitialLocale
+    );
+    assert.equal(result, "en");
+  });
+
+  test("recovers from a throwing localStorage and still honors navigator.language", () => {
+    // The storage exception is swallowed, so the navigator branch still runs.
+    const result = withLocaleGlobals(
+      { localStorage: throwingStorage, navigator: { language: "ja" } },
+      detectInitialLocale
+    );
+    assert.equal(result, "ja");
+  });
+
+  test("falls back to English when neither localStorage nor navigator is available", () => {
+    const result = withLocaleGlobals(
+      { localStorage: undefined, navigator: undefined },
+      detectInitialLocale
+    );
+    assert.equal(result, "en");
   });
 });
