@@ -18,16 +18,30 @@
   </head>
   <body>
     <!--
-      Deliberately no dismiss/close control here (issue #9): this is a
-      security disclosure, not a dismissible tip, so it stays visible on
-      every load rather than being something a user mutes once and then
-      never sees again. See THREAT_MODEL.md for the full rationale.
+      Issue #28 (supersedes issue #9's original no-dismiss decision): #9
+      shipped this as permanently visible on the theory that a security
+      disclosure shouldn't be something a user mutes once and never sees
+      again. Real usage showed the opposite -- pinned for the whole session it
+      became pure noise after the first read, and the old wording read as
+      "this app is dangerous" rather than naming the actual risk. It's now
+      shown once, dismissible, and its choice is remembered in localStorage;
+      the disclosure itself isn't removed, just no longer force-shown every
+      load -- the "🛡" control in the brand row below re-opens it on demand.
+      See THREAT_MODEL.md for the full rationale.
     -->
-    <div id="security-notice" class="security-notice" role="note" data-i18n="security.notice">
-      ⚠ Anything you copy from this page may be pasted into a third-party AI
-      assistant. File content can contain instructions written to manipulate
-      that AI ("prompt injection") -- review what you're about to share
-      before pasting it anywhere.
+    <div id="security-notice" class="security-notice" role="note" hidden>
+      <span data-i18n="security.notice">
+        ⚠ What you copy goes to the third-party AI you picked. Treat the
+        files you open as untrusted input, too -- their contents can include
+        text that steers the AI. What you share is your call.
+      </span>
+      <button
+        type="button"
+        id="security-notice-dismiss"
+        class="security-notice-dismiss"
+        data-i18n-aria="security.dismiss"
+        aria-label="Dismiss this notice"
+      >✕</button>
     </div>
     <div id="app" class="app">
       <aside id="explorer-pane" class="explorer-pane">
@@ -46,14 +60,26 @@
             alt="prompt-builder-for-sidebar-ai"
             title="prompt-builder-for-sidebar-ai"
           />
-          <div class="locale-switcher">
-            <label for="locale-select" class="locale-switcher-label" data-i18n="locale.label"
-              >Language</label
+          <div class="brand-row-controls">
+            <button
+              type="button"
+              id="security-reopen"
+              class="security-reopen-button"
+              data-i18n-aria="security.reopenAria"
+              aria-label="Show the safety notice"
             >
-            <select id="locale-select" class="locale-select">
-              <option value="en">English</option>
-              <option value="ja">日本語</option>
-            </select>
+              <span aria-hidden="true">🛡</span>
+              <span data-i18n="security.reopenLabel">Safety</span>
+            </button>
+            <div class="locale-switcher">
+              <label for="locale-select" class="locale-switcher-label" data-i18n="locale.label"
+                >Language</label
+              >
+              <select id="locale-select" class="locale-select">
+                <option value="en">English</option>
+                <option value="ja">日本語</option>
+              </select>
+            </div>
           </div>
         </div>
 
