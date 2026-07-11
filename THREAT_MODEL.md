@@ -62,8 +62,22 @@ to an AI API itself and never writes to the served directory.
 | A secret-looking file (`.env`, a private key, ...) is silently included in a prompt without the user noticing. | Flagged (`likely_secret: true`), not hidden -- the user sees a warning badge before choosing to include it. (Deliberately flagged rather than excluded: hiding it outright would be a false sense of security once a name pattern is inevitably missed, and would prevent a user who *does* want to inspect/share it, e.g. a `.env.example` template, from doing so.) |
 | A pathological directory (huge file count, an enormous single file) makes a request hang or exhaust memory. | `discover_tree` caps the walk at `MAX_TREE_ENTRIES` *visited* items -- not just how many end up collected, so a tree dominated by filtered-out items (an enormous number of symlinks, or binaries, since checking one means opening and reading it) can't blow through the cap for free; `/api/file` and the Git-diff endpoint both refuse a file over `MAX_SERVABLE_FILE_SIZE` (issue #9). Neither cap is meant to be reached by an ordinary project -- they're backstops, not a feature. A hit cap is surfaced, not silent: `/api/tree` reports `truncated: true` and the explorer UI shows a warning, rather than a cut-off list quietly looking complete; which entries survive is deterministic (name-sorted per directory during the walk) rather than depending on unspecified filesystem enumeration order. |
 | A non-regular file (FIFO, device, socket) is opened and blocks the request forever (e.g. a FIFO with no writer). | Never opened at all: both `discover_tree` and `resolve_regular_file` check the file type first and skip/refuse anything that isn't a regular file or directory. |
-| Prompt injection: a file's content contains text written to manipulate whatever AI later reads the copied prompt. | **Not preventable by this tool** -- there is no reliable way to distinguish "legitimate file content" from "content crafted to look like an instruction" from outside the AI itself. Disclosed instead: a persistent on-page notice (see `assets/index.html`'s `#security-notice`) and this document. |
+| Prompt injection: a file's content contains text written to manipulate whatever AI later reads the copied prompt. | **Not preventable by this tool** -- there is no reliable way to distinguish "legitimate file content" from "content crafted to look like an instruction" from outside the AI itself. Disclosed instead: an on-page notice (see `assets/index.html`'s `#security-notice`) and this document. |
 | Copied content is sent to a third-party AI provider the user didn't fully consider (privacy). | **The user's judgment, not this tool's to enforce** -- disclosed via the same on-page notice and the README's disclaimer. This tool's own job ends at "put correctly-scoped, unambiguously-delimited text on the clipboard." |
+
+Issue #9 originally shipped `#security-notice` with no dismiss control and no
+"once per session" concession, on the theory that a security disclosure
+shouldn't be something a user mutes once and never sees again. Issue #28
+reversed that: real usage showed a notice pinned for the whole session
+becomes pure noise after the first read, and the original wording read as
+"this app is dangerous" rather than naming the actual risk (untrusted file
+content; an external, uncontrolled AI on the receiving end of a paste). The
+notice now shows once (persisted via `localStorage`, guarded so a
+private-browsing/non-browser context degrades to "always show" rather than
+throwing), is dismissible with a close button, and can be re-opened on demand
+via a small "🛡 Safety" control that stays permanently visible in the brand
+row -- the disclosure itself was never removed, only the forced-every-load
+display.
 | `ROOT` given as a GitHub URL (issue #14) clones from an unexpected location, or the clone itself is unbounded. | The clone URL is always reconstructed as `https://github.com/{owner}/{repo}.git` from the parsed owner/repo, never the raw input string, so the CLI argument can't inject a different protocol or host at the URL-parsing level. Once on disk, the clone is validated identically to any other local root -- no new logic needed there. **Not mitigated**: `git clone --depth 1` bounds history but not working-tree size, and the clone has no timeout; see "Explicitly out of scope" below. |
 
 ## Explicitly out of scope
