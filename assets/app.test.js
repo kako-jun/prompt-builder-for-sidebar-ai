@@ -2010,6 +2010,22 @@ describe("tr", () => {
     assert.notEqual(tr("ja", "recent.clear"), tr("ja", "preset.clearSelection"));
   });
 
+  test("returns the revised security notice text for both locales (issue #28: names the actual risk instead of implying the app itself is dangerous)", () => {
+    assert.match(tr("en", "security.notice"), /third-party AI/);
+    assert.match(tr("en", "security.notice"), /untrusted input/);
+    assert.match(tr("ja", "security.notice"), /外部のAI/);
+    assert.match(tr("ja", "security.notice"), /信頼できない入力/);
+  });
+
+  test("returns the security notice dismiss/reopen control strings for both locales (issue #28)", () => {
+    assert.equal(tr("en", "security.dismiss"), "Dismiss this notice");
+    assert.equal(tr("ja", "security.dismiss"), "この通知を閉じる");
+    assert.equal(tr("en", "security.reopenLabel"), "Safety");
+    assert.equal(tr("ja", "security.reopenLabel"), "安全性");
+    assert.equal(tr("en", "security.reopenAria"), "Show the safety notice");
+    assert.equal(tr("ja", "security.reopenAria"), "安全性の通知を表示");
+  });
+
   test("falls back to English for an unsupported locale (its table is missing entirely)", () => {
     // MESSAGES has no "fr" table, so the lookup drops to the English one.
     assert.equal(tr("fr", "stats.none"), "No files selected.");

@@ -50,11 +50,18 @@ button {
   white-space: nowrap;
 }
 
-/* Issue #9: a persistent (not dismissible -- see the HTML comment near its
-   markup) disclosure that copied content may reach a third-party AI and can
-   carry prompt-injection text. Kept slim so it doesn't meaningfully compete
-   with the explorer/content panes for space. */
+/* Issue #28 (was permanently visible under issue #9, see the HTML comment
+   near its markup for why that changed): a dismissible disclosure that
+   copied content reaches a third-party AI and that opened files are
+   untrusted input. Kept slim so it doesn't meaningfully compete with the
+   explorer/content panes for space. This element declares its own
+   `display: flex` below, so the UA's `[hidden] { display: none }` loses the
+   specificity fight -- the explicit `.security-notice[hidden]` override
+   further down is required, not redundant. */
 .security-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
   flex-shrink: 0;
   padding: 0.4rem 0.9rem;
   background: rgba(224, 169, 64, 0.12);
@@ -62,6 +69,25 @@ button {
   color: var(--warning);
   font-size: 0.78rem;
   line-height: 1.4;
+}
+
+.security-notice[hidden] {
+  display: none;
+}
+
+.security-notice-dismiss {
+  flex-shrink: 0;
+  background: transparent;
+  border: none;
+  color: inherit;
+  font-size: 0.85rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0.1rem 0.2rem;
+}
+
+.security-notice-dismiss:hover {
+  color: var(--text);
 }
 
 .app {
@@ -109,6 +135,35 @@ button {
   display: block;
   flex-shrink: 0;
   border-radius: 5px;
+}
+
+/* Issue #28: groups the always-visible "🛡 Safety" re-open control with the
+   language toggle at the brand row's right edge, so both compact controls
+   sit together rather than the safety button floating on its own. */
+.brand-row-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.security-reopen-button {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  border-radius: 4px;
+  padding: 0.2rem 0.45rem;
+  font: inherit;
+  font-size: 0.75rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.security-reopen-button:hover {
+  color: var(--warning);
+  border-color: var(--warning);
 }
 
 /* Language toggle (issue #22): a compact EN / 日本語 switcher sharing the brand

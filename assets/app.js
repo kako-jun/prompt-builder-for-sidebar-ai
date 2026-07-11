@@ -11,6 +11,11 @@ const BASE_PATH =
 const RECENT_STORAGE_KEY = "promptBuilder.recentFiles";
 const RECENT_LIMIT = 100;
 
+// Issue #28: whether the user has dismissed the security notice, persisted
+// the same way as the locale/recent-files choices (best-effort localStorage,
+// guarded so a private-browsing/non-browser context never throws).
+const SECURITY_NOTICE_STORAGE_KEY = "pbsa-security-notice-dismissed";
+
 const MIN_EXPLORER_WIDTH = 220;
 const MAX_EXPLORER_WIDTH = 800;
 
@@ -152,8 +157,15 @@ const MESSAGES = {
     "contextMode.full.label": "Full selected files",
 
     // Static chrome
+    // Issue #28: rewritten to name the actual risk (untrusted file content;
+    // an external, uncontrolled AI on the receiving end of a paste) instead
+    // of reading as "this app is dangerous". See the HTML comment near
+    // #security-notice and THREAT_MODEL.md for the full rationale.
     "security.notice":
-      '⚠ Anything you copy from this page may be pasted into a third-party AI assistant. File content can contain instructions written to manipulate that AI ("prompt injection") -- review what you\'re about to share before pasting it anywhere.',
+      "⚠ What you copy goes to the third-party AI you picked. Treat the files you open as untrusted input, too -- their contents can include text that steers the AI. What you share is your call.",
+    "security.dismiss": "Dismiss this notice",
+    "security.reopenLabel": "Safety",
+    "security.reopenAria": "Show the safety notice",
     "locale.label": "Language",
     "root.loading": "Loading…",
     "root.loadFailed": "(failed to load root)",
@@ -313,8 +325,14 @@ const MESSAGES = {
     "contextMode.full.label": "選択したファイル全体",
 
     // Static chrome
+    // Issue #28: 実際のリスクの出どころ（信頼できない入力としてのファイル、
+    // 貼り付け先の第三者AI）を名指しする文言に改訂。#security-notice 近くの
+    // HTMLコメントと THREAT_MODEL.md に方針転換の経緯を記載。
     "security.notice":
-      "⚠ このページからコピーした内容は、サードパーティのAIアシスタントに貼り付けられる可能性があります。ファイルの内容には、そのAIを操作するために書かれた指示（「プロンプトインジェクション」）が含まれていることがあります — 貼り付ける前に、共有しようとしている内容を確認してください。",
+      "⚠ コピーした内容は、あなたが選んだ外部のAIに渡ります。開いたファイル自体も「信頼できない入力」として扱ってください（中身にAIを誘導する文が紛れていることがあります）。何を共有するかはあなた次第です。",
+    "security.dismiss": "この通知を閉じる",
+    "security.reopenLabel": "安全性",
+    "security.reopenAria": "安全性の通知を表示",
     "locale.label": "言語",
     "root.loading": "読み込み中…",
     "root.loadFailed": "（ルートの読み込みに失敗しました）",
@@ -494,6 +512,8 @@ let el = {};
 
 async function init() {
   wireLocaleSwitcher();
+  wireSecurityNotice();
+  setSecurityNoticeVisible(!loadSecurityNoticeDismissed());
   // Known/accepted (issue #22, nit): the HTML ships English static chrome, so a
   // ja user can see a brief English flash before this runs. This module is
   // deferred but executes near-immediately, so the flash is negligible;
@@ -2408,6 +2428,58 @@ function createRecentReopenIcon() {
   return svg;
 }
 
+// ---- Security notice dismiss/reopen (issue #28, localStorage) ----
+//
+// Same best-effort persistence pattern as `loadRecent`/`saveRecent` above and
+// `detectInitialLocale`/`setLocale`: a failing `localStorage` (private
+// browsing, disabled, non-browser) degrades to "not dismissed" / "the choice
+// just doesn't stick across reloads" rather than throwing.
+
+function loadSecurityNoticeDismissed() {
+  try {
+    return localStorage.getItem(SECURITY_NOTICE_STORAGE_KEY) === "1";
+  } catch (err) {
+    return false;
+  }
+}
+
+function saveSecurityNoticeDismissed(dismissed) {
+  try {
+    if (dismissed) {
+      localStorage.setItem(SECURITY_NOTICE_STORAGE_KEY, "1");
+    } else {
+      localStorage.removeItem(SECURITY_NOTICE_STORAGE_KEY);
+    }
+  } catch (err) {
+    // localStorage may be unavailable; the choice still applies for this
+    // load, it just won't be remembered across reloads.
+  }
+}
+
+/** Shows/hides `#security-notice` via the `hidden` attribute (not a class or
+ * inline style) so `role="note"` keeps working normally when visible and the
+ * element is removed from the accessibility tree -- not just visually
+ * masked -- when dismissed. */
+function setSecurityNoticeVisible(visible) {
+  if (!el.securityNotice) return;
+  el.securityNotice.hidden = !visible;
+}
+
+function wireSecurityNotice() {
+  if (el.securityNoticeDismiss) {
+    el.securityNoticeDismiss.addEventListener("click", () => {
+      saveSecurityNoticeDismissed(true);
+      setSecurityNoticeVisible(false);
+    });
+  }
+  if (el.securityReopen) {
+    el.securityReopen.addEventListener("click", () => {
+      saveSecurityNoticeDismissed(false);
+      setSecurityNoticeVisible(true);
+    });
+  }
+}
+
 function renderRecentList() {
   const list = loadRecent();
   el.recentList.innerHTML = "";
@@ -2844,6 +2916,9 @@ function renderAll() {
 if (typeof document !== "undefined") {
   el = {
     localeSelect: document.getElementById("locale-select"),
+    securityNotice: document.getElementById("security-notice"),
+    securityNoticeDismiss: document.getElementById("security-notice-dismiss"),
+    securityReopen: document.getElementById("security-reopen"),
     rootBasename: document.getElementById("root-basename"),
     rootPath: document.getElementById("root-path"),
     treeRoot: document.getElementById("tree-root"),

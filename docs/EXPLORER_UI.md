@@ -6,9 +6,11 @@ opened list; a right pane that renders every checked file's content as its
 own collapsible panel. It defaults to a dark theme and is implemented as
 plain HTML/CSS/JS (`assets/index.html`, `assets/style.css`, `assets/app.js`,
 all embedded in the binary at build time) with no external network
-dependency and no build step. A persistent notice at the top of the page
-restates this README's disclaimer: content copied from here may be pasted
-into a third-party AI, and file content can carry prompt-injection text.
+dependency and no build step. A dismissible notice at the top of the page
+restates this README's disclaimer: content copied from here goes to
+whichever third-party AI the user pastes it into, and the files opened here
+should themselves be treated as untrusted input (see "Security notice" below
+for its dismiss/reopen behavior).
 
 The app icon (`assets/icon.png`) is embedded too and inlined as a `data:`
 URI -- serving as the page favicon (`<link rel="icon">`), an
@@ -23,6 +25,36 @@ name; the full name shows on hover via its `alt`/`title`. It is intentionally
 not a link or button -- this is a single-root-per-session tool, so there is
 nowhere to navigate "home" to (that becomes meaningful once issue #11 adds a
 root picker).
+
+## Security notice (dismiss / reopen)
+
+`#security-notice` originally shipped (issue #9) with no dismiss control at
+all, on the theory that a security disclosure shouldn't be something a user
+mutes once and never sees again. Issue #28 reversed that decision based on
+real usage: pinned for the whole session, the notice became pure noise after
+the first read, and its original wording ("content copied from this page may
+be pasted into a third-party AI...") read as if the tool itself were the
+danger rather than naming the actual risk. See `THREAT_MODEL.md` for the full
+before/after rationale.
+
+The current behavior:
+
+- The notice shows once, the first time the page loads with no stored
+  dismissal.
+- A close button (✕) dismisses it and persists that choice to `localStorage`
+  (`pbsa-security-notice-dismissed`), the same best-effort pattern as the
+  locale/recent-files choices -- a private-browsing or storage-disabled
+  context just won't remember the dismissal across reloads.
+- A small "🛡 Safety" control sits permanently in the brand row next to the
+  language toggle and re-shows the notice on demand at any time; reopening it
+  clears the stored dismissal, so the notice goes back to showing again on
+  the next load too (it doesn't stay silently "seen forever" once you've
+  chosen to look at it again).
+- The wording itself was rewritten to name the two actual risk points
+  directly: files opened here are untrusted input (their content can include
+  text written to steer an AI), and whatever gets copied out is handed to
+  a third-party AI this tool has no control over. What to share remains the
+  user's call either way -- the notice discloses, it doesn't gate anything.
 
 ## Quick select chips
 
