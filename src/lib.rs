@@ -5,6 +5,7 @@ use axum::{
     routing::get,
     Json, Router,
 };
+use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
@@ -17,26 +18,51 @@ pub mod github_root;
 use diff::compute_diff;
 use discovery::{discover_tree, is_probably_binary, FileEntry};
 
-/// HTML shell template embedded in the binary. `/*__STYLE_PLACEHOLDER__*/`
-/// and `//__SCRIPT_PLACEHOLDER__` are substituted with [`APP_CSS`] and
-/// [`APP_JS`] at first use by [`rendered_index_html`]; the three files stay
-/// separate on disk (rather than being hand-embedded as Rust string
-/// literals) so `assets/app.js` and `assets/style.css` remain plain,
+/// HTML shell template embedded in the binary. `/*__STYLE_PLACEHOLDER__*/`,
+/// `//__SCRIPT_PLACEHOLDER__`, and `__ICON_DATA_URI__` are substituted with
+/// [`APP_CSS`], [`APP_JS`], and the app icon's `data:` URI (see
+/// [`icon_data_uri`]) at first use by [`rendered_index_html`]; the CSS and JS
+/// files stay separate on disk (rather than being hand-embedded as Rust
+/// string literals) so `assets/app.js` and `assets/style.css` remain plain,
 /// lintable, syntax-checkable files with no `format!`-style brace escaping.
 const INDEX_TEMPLATE: &str = include_str!("../assets/index.html");
 const APP_CSS: &str = include_str!("../assets/style.css");
 const APP_JS: &str = include_str!("../assets/app.js");
 
+/// The app icon (favicon + explorer-pane logo), embedded from the single
+/// `assets/icon.png` so the page needs no separate icon route and makes no
+/// extra network request for it -- see [`icon_data_uri`].
+const APP_ICON: &[u8] = include_bytes!("../assets/icon.png");
+
+/// The app icon as a `data:image/png;base64,...` URI, base64-encoded once and
+/// reused for every request. Inlining the icon into the single-page HTML (as
+/// both the `<link rel="icon">` favicon and the explorer-pane logo) keeps the
+/// app request-free: there's no `/favicon.ico` round-trip -- and so no known
+/// `/favicon.ico` 404 in the browser console -- and no icon route to add to
+/// the token-scoped router.
+fn icon_data_uri() -> &'static str {
+    static ICON_DATA_URI: OnceLock<String> = OnceLock::new();
+    ICON_DATA_URI.get_or_init(|| {
+        format!(
+            "data:image/png;base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(APP_ICON)
+        )
+    })
+}
+
 /// Builds the final HTML shell once and reuses it for every request; the
 /// template substitution has no per-request inputs (root/token are read by
 /// the frontend from `/api/root` and the URL itself, not baked into the
-/// HTML).
+/// HTML). `.replace` substitutes every occurrence, so `__ICON_DATA_URI__` is
+/// filled at each place it appears (the favicon links and the logo) in one
+/// pass.
 fn rendered_index_html() -> &'static str {
     static RENDERED: OnceLock<String> = OnceLock::new();
     RENDERED.get_or_init(|| {
         INDEX_TEMPLATE
             .replace("/*__STYLE_PLACEHOLDER__*/", APP_CSS)
             .replace("//__SCRIPT_PLACEHOLDER__", APP_JS)
+            .replace("__ICON_DATA_URI__", icon_data_uri())
     })
 }
 
@@ -294,6 +320,63 @@ async fn not_found() -> impl IntoResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn app_icon_is_a_nonempty_png() {
+        assert!(
+            !APP_ICON.is_empty(),
+            "the embedded app icon should not be empty"
+        );
+        assert!(
+            APP_ICON.starts_with(b"\x89PNG"),
+            "the embedded app icon should start with the PNG magic bytes"
+        );
+    }
+
+    #[test]
+    fn icon_data_uri_is_a_base64_png_data_uri() {
+        let uri = icon_data_uri();
+        assert!(
+            uri.starts_with("data:image/png;base64,"),
+            "the icon should be exposed as a base64 PNG data URI: {uri}"
+        );
+        assert!(
+            uri.len() > "data:image/png;base64,".len(),
+            "the data URI should carry the encoded icon payload"
+        );
+    }
+
+    #[test]
+    fn rendered_html_inlines_the_icon_and_leaves_no_placeholder() {
+        let html = rendered_index_html();
+        assert!(
+            html.contains("data:image/png;base64,"),
+            "the rendered HTML should inline the icon as a data URI"
+        );
+        assert!(
+            !html.contains("__ICON_DATA_URI__"),
+            "every icon placeholder should be substituted, none left behind"
+        );
+    }
+
+    #[test]
+    fn rendered_html_search_icon_is_decorative_and_label_survives() {
+        // issue #15 follow-up: the search box grew a decorative funnel <svg>.
+        // It must stay aria-hidden (so screen readers don't double-announce
+        // the filter box) and must not have displaced the existing
+        // <label for="search-input"> that actually names the field.
+        let html = rendered_index_html();
+        assert!(
+            html.contains(r#"<svg class="search-icon" viewBox="0 0 16 16" aria-hidden="true""#),
+            "the search icon should be a decorative, aria-hidden svg"
+        );
+        assert!(
+            html.contains(
+                r#"<label for="search-input" class="visually-hidden" data-i18n="search.label""#
+            ),
+            "the accessible label for the search input should still be present"
+        );
+    }
 
     #[test]
     fn resolve_root_accepts_an_existing_directory() {
