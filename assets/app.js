@@ -39,6 +39,416 @@ const SOURCE_EXTENSIONS = new Set([
 ]);
 const DOC_EXTENSIONS = new Set(["md", "mdx", "txt"]);
 
+// ---- Internationalization (i18n) ----
+//
+// English is the source and fallback; Japanese is the one switchable
+// alternative (issue #22). A single active locale drives both the UI chrome
+// and the generated prompt text. `MESSAGES` is the single source of truth for
+// every user-visible string in either language; `tr(locale, key, params)` is
+// the pure lookup (explicit locale, English fallback) used by the DOM-free
+// prompt/stats builders so their output is deterministic per-locale and stays
+// testable without a browser, and `t(key, params)` is the UI-facing wrapper
+// that reads whatever locale is currently active.
+
+const LOCALE_STORAGE_KEY = "pbsa-locale";
+const SUPPORTED_LOCALES = ["en", "ja"];
+
+const MESSAGES = {
+  en: {
+    // Generated prompt -- goal instructions
+    "goal.locate.instruction": "Locate the code and functions most relevant to the request below.",
+    "goal.explain.instruction": "Explain what this code does and how it works.",
+    "goal.investigate-bug.instruction":
+      "Investigate the described bug (or its impact), including its likely root cause.",
+    "goal.review.instruction": "Review this code's design and/or security, and list any concerns.",
+    "goal.extract-tests.instruction":
+      "Extract or propose test cases that cover this code's behavior.",
+    "goal.refactor.instruction":
+      "Suggest refactoring opportunities here and explain why each would help.",
+    "goal.plan.instruction": "Produce an implementation plan for the request below.",
+
+    // Generated prompt -- output instructions
+    "output.concise.instruction": "Respond with a concise answer.",
+    "output.report.instruction": "Respond with a structured investigation report.",
+    "output.issue.instruction":
+      "Respond with a GitHub issue, ready to file, with a clear title and body.",
+    "output.instructions.instruction":
+      "Respond with step-by-step instructions for an implementation agent.",
+    "output.checklist.instruction": "Respond with a checklist.",
+    "output.diff.instruction": "Respond with a unified diff.",
+    "output.file.instruction":
+      "Generate the response as a downloadable file named {name}.",
+
+    // Generated prompt -- target phrases
+    "target.checked.phrase": "the checked files: {refs}",
+    "target.checked.empty":
+      "the checked files (none are currently checked -- check some files in the explorer first)",
+    "target.lines.phrase": "the selected line range: {refs}",
+    "target.lines.phrasePlural": "the selected line ranges: {refs}",
+    "target.lines.empty":
+      "the selected line range (no lines are currently selected -- click a line number in an open file first)",
+    "target.diff.phrase": "the current Git diff of this project",
+    "target.page.phrase": "the whole page (everything currently visible in this browser tab)",
+
+    // Generated prompt -- assembled sentences
+    "prompt.targetLine": "Target: {target}.",
+    "prompt.additionalInstructions": "Additional instructions:\n{text}",
+    "prompt.referenceNote":
+      "When referring to a specific location in the code, use the stable references shown on the page (@file:..., @dir:..., @lines:...) so it can be traced back precisely.",
+
+    // Generated prompt -- context section
+    "context.heading": "## Context",
+    "context.gitDiffHeading": "### Git diff",
+    "context.diff.pageNote":
+      '(Git diff content is never shown on the page itself, so "Page context only" can\'t include it here. Switch context mode to "Referenced excerpts" or "Full selected files" to embed the diff.)',
+    "context.diff.none": "(No Git diff information is available.)",
+    "context.excerpts.none":
+      '(No line range is currently selected, so no excerpt could be embedded here. Select one first, or switch context mode to "Page context only".)',
+    "context.full.none":
+      '(No files are currently checked, so no content could be embedded here. Check some files first, or switch context mode to "Page context only".)',
+
+    // Selection size statistics
+    "stats.none": "No files selected.",
+    "stats.oneFile": "1 file selected",
+    "stats.manyFiles": "{count} files selected",
+    "stats.pending": " ({count} still loading)",
+    "stats.base": "{files}{pending} · {chars} characters · ~{tokens} tokens (rough estimate)",
+    "stats.large": " · ⚠ large selection",
+
+    // Composer -- goal option labels
+    "goal.locate.label": "Find relevant code",
+    "goal.explain.label": "Explain code",
+    "goal.investigate-bug.label": "Investigate a bug or its impact",
+    "goal.review.label": "Review design or security",
+    "goal.extract-tests.label": "Extract test cases",
+    "goal.refactor.label": "Suggest refactoring",
+    "goal.plan.label": "Plan implementation",
+
+    // Composer -- target option labels
+    "target.page.label": "Whole page",
+    "target.checked.label": "Checked files",
+    "target.lines.label": "Selected lines",
+    "target.diff.label": "Git diff",
+
+    // Composer -- output option labels
+    "output.concise.label": "Concise answer",
+    "output.report.label": "Investigation report",
+    "output.issue.label": "GitHub issue",
+    "output.instructions.label": "Implementation instructions",
+    "output.checklist.label": "Checklist",
+    "output.diff.label": "Unified diff",
+    "output.file.label": "Downloadable file",
+
+    // Composer -- context-mode option labels
+    "contextMode.page.label": "Page context only",
+    "contextMode.excerpts.label": "Referenced excerpts",
+    "contextMode.full.label": "Full selected files",
+
+    // Static chrome
+    "security.notice":
+      '⚠ Anything you copy from this page may be pasted into a third-party AI assistant. File content can contain instructions written to manipulate that AI ("prompt injection") -- review what you\'re about to share before pasting it anywhere.',
+    "locale.label": "Language",
+    "root.loading": "Loading…",
+    "root.loadFailed": "(failed to load root)",
+    "root.loadFailedHttp": "(failed to load root: HTTP {status})",
+    "preset.allText": "All text files",
+    "preset.sourceOnly": "Source only",
+    "preset.docsOnly": "Docs only",
+    "preset.clearSelection": "Clear selection",
+    "preset.groupLabel": "Selection presets",
+    "search.label": "Filter files by path",
+    "search.placeholder": "Filter by path…",
+    "recent.sectionLabel": "Recently opened files",
+    "recent.title": "Recently opened",
+    "recent.clear": "Clear",
+    "recent.empty": "No recently opened files yet.",
+    "recent.removeAria": "Remove {path} from recently opened",
+    "tree.truncationWarning":
+      "⚠ This project has more files than can be shown at once; the list below is incomplete.",
+    "tree.explorerLabel": "File explorer",
+    "tree.loadFailed": "Failed to load the file tree.",
+    "tree.loadFailedHttp": "Failed to load the file tree (HTTP {status}).",
+    "tree.expandDir": "Expand directory",
+    "tree.collapseDir": "Collapse directory",
+    "tree.dirCopyTitle": "Copy all files in this directory (Markdown)",
+    "tree.dirCopyAria": "Copy all files under {path}",
+    "tree.rootName": "the project root",
+    "tree.secretBadge": "⚠ secret?",
+    "tree.secretTitle": "This file's name looks like it may contain secrets.",
+    "resizer.label": "Resize explorer pane",
+    "promptComposer.ariaLabel": "Prompt composer",
+    "promptComposer.title": "Prompt composer",
+    "promptComposer.collapse": "Collapse prompt composer",
+    "promptComposer.expand": "Expand prompt composer",
+    "composer.goal": "Goal",
+    "composer.target": "Target",
+    "composer.output": "Output",
+    "composer.filename": "Filename",
+    "composer.filenamePlaceholder": "e.g. test-spec.md",
+    "composer.contextMode": "Context mode",
+    "composer.extra": "Additional instructions (optional)",
+    "composer.generate": "Generate prompt",
+    "composer.copy": "Copy prompt",
+    "composer.result": "Generated prompt (editable)",
+    "composer.resultPlaceholder": "Choose options above and click “Generate prompt”.",
+    "content.emptyHint": "Select files in the explorer to see their contents here.",
+    "filePanel.expand": "Expand file panel",
+    "filePanel.collapse": "Collapse file panel",
+    "file.loading": "Loading…",
+    "file.loadFailed": "(failed to load: {err})",
+    "file.loadFailedHttp": "(failed to load: HTTP {status})",
+    "copy.copy": "Copy",
+    "copy.copied": "Copied!",
+    "copy.failed": "Copy failed",
+    "copy.moreOptions": "More copy options",
+    "menu.copyFileAs": "Copy file as {format}",
+    "menu.copyReferenceOnly": "Copy reference only",
+    "menu.copyReferenceAndCode": "Copy reference + code",
+    "menu.copyAllCheckedAs": "Copy all checked as {format}",
+    "menu.copyFileTree": "Copy file tree",
+    "toolbar.oneFileOpen": "1 file open",
+    "toolbar.manyFilesOpen": "{count} files open",
+    "toolbar.copyAllChecked": "Copy all checked",
+    "toast.copied": "Copied to clipboard.",
+    "toast.copyFailed": "Copy failed: {error}",
+    "toast.unknownError": "unknown error",
+  },
+  ja: {
+    // Generated prompt -- goal instructions
+    "goal.locate.instruction": "以下の依頼に最も関連するコードと関数を特定してください。",
+    "goal.explain.instruction": "このコードが何をするか、どのように動作するかを説明してください。",
+    "goal.investigate-bug.instruction":
+      "記載されたバグ（またはその影響）を、想定される根本原因も含めて調査してください。",
+    "goal.review.instruction": "このコードの設計やセキュリティをレビューし、懸念点を挙げてください。",
+    "goal.extract-tests.instruction":
+      "このコードの挙動をカバーするテストケースを抽出または提案してください。",
+    "goal.refactor.instruction":
+      "ここでのリファクタリングの余地を提案し、それぞれがなぜ有効かを説明してください。",
+    "goal.plan.instruction": "以下の依頼に対する実装計画を作成してください。",
+
+    // Generated prompt -- output instructions
+    "output.concise.instruction": "簡潔な回答で答えてください。",
+    "output.report.instruction": "構造化された調査レポートで答えてください。",
+    "output.issue.instruction":
+      "そのまま起票できるGitHub issueを、明確なタイトルと本文付きで答えてください。",
+    "output.instructions.instruction":
+      "実装エージェント向けの手順を、ステップごとに答えてください。",
+    "output.checklist.instruction": "チェックリストで答えてください。",
+    "output.diff.instruction": "unified diffで答えてください。",
+    "output.file.instruction":
+      "回答を {name} という名前のダウンロード可能なファイルとして生成してください。",
+
+    // Generated prompt -- target phrases
+    "target.checked.phrase": "チェックしたファイル: {refs}",
+    "target.checked.empty":
+      "チェックしたファイル（現在チェックされているファイルはありません — まずエクスプローラーでファイルをチェックしてください）",
+    "target.lines.phrase": "選択した行範囲: {refs}",
+    "target.lines.phrasePlural": "選択した行範囲: {refs}",
+    "target.lines.empty":
+      "選択した行範囲（現在選択されている行はありません — まず開いているファイルの行番号をクリックしてください）",
+    "target.diff.phrase": "このプロジェクトの現在のGit差分",
+    "target.page.phrase": "ページ全体（このブラウザタブに現在表示されているすべて）",
+
+    // Generated prompt -- assembled sentences
+    "prompt.targetLine": "対象: {target}。",
+    "prompt.additionalInstructions": "追加の指示:\n{text}",
+    "prompt.referenceNote":
+      "コード内の特定の箇所を参照するときは、ページに表示されている安定参照（@file:..., @dir:..., @lines:...）を使い、正確に辿れるようにしてください。",
+
+    // Generated prompt -- context section
+    "context.heading": "## コンテキスト",
+    "context.gitDiffHeading": "### Git差分",
+    "context.diff.pageNote":
+      "（Git差分はページ自体には表示されないため、「ページのコンテキストのみ」ではここに含められません。差分を埋め込むには、コンテキストモードを「参照した抜粋」または「選択したファイル全体」に切り替えてください。）",
+    "context.diff.none": "（利用できるGit差分の情報がありません。）",
+    "context.excerpts.none":
+      "（現在選択されている行範囲がないため、抜粋を埋め込めませんでした。まず選択するか、コンテキストモードを「ページのコンテキストのみ」に切り替えてください。）",
+    "context.full.none":
+      "（現在チェックされているファイルがないため、内容を埋め込めませんでした。まずファイルをチェックするか、コンテキストモードを「ページのコンテキストのみ」に切り替えてください。）",
+
+    // Selection size statistics
+    "stats.none": "ファイルが選択されていません。",
+    "stats.oneFile": "1 ファイル選択中",
+    "stats.manyFiles": "{count} ファイル選択中",
+    "stats.pending": "（{count} 件読み込み中）",
+    "stats.base": "{files}{pending} · {chars} 文字 · 約 {tokens} トークン（概算）",
+    "stats.large": " · ⚠ 選択が大きすぎます",
+
+    // Composer -- goal option labels
+    "goal.locate.label": "関連コードを探す",
+    "goal.explain.label": "コードを説明",
+    "goal.investigate-bug.label": "バグやその影響を調査",
+    "goal.review.label": "設計やセキュリティをレビュー",
+    "goal.extract-tests.label": "テストケースを抽出",
+    "goal.refactor.label": "リファクタリングを提案",
+    "goal.plan.label": "実装計画を立てる",
+
+    // Composer -- target option labels
+    "target.page.label": "ページ全体",
+    "target.checked.label": "チェックしたファイル",
+    "target.lines.label": "選択した行",
+    "target.diff.label": "Git差分",
+
+    // Composer -- output option labels
+    "output.concise.label": "簡潔な回答",
+    "output.report.label": "調査レポート",
+    "output.issue.label": "GitHub issue",
+    "output.instructions.label": "実装手順",
+    "output.checklist.label": "チェックリスト",
+    "output.diff.label": "unified diff",
+    "output.file.label": "ダウンロードファイル",
+
+    // Composer -- context-mode option labels
+    "contextMode.page.label": "ページのコンテキストのみ",
+    "contextMode.excerpts.label": "参照した抜粋",
+    "contextMode.full.label": "選択したファイル全体",
+
+    // Static chrome
+    "security.notice":
+      "⚠ このページからコピーした内容は、サードパーティのAIアシスタントに貼り付けられる可能性があります。ファイルの内容には、そのAIを操作するために書かれた指示（「プロンプトインジェクション」）が含まれていることがあります — 貼り付ける前に、共有しようとしている内容を確認してください。",
+    "locale.label": "言語",
+    "root.loading": "読み込み中…",
+    "root.loadFailed": "（ルートの読み込みに失敗しました）",
+    "root.loadFailedHttp": "（ルートの読み込みに失敗しました: HTTP {status}）",
+    "preset.allText": "すべてのテキストファイル",
+    "preset.sourceOnly": "ソースのみ",
+    "preset.docsOnly": "ドキュメントのみ",
+    "preset.clearSelection": "選択をクリア",
+    "preset.groupLabel": "選択プリセット",
+    "search.label": "パスでファイルを絞り込む",
+    "search.placeholder": "パスで絞り込み…",
+    "recent.sectionLabel": "最近開いたファイル",
+    "recent.title": "最近開いたファイル",
+    "recent.clear": "クリア",
+    "recent.empty": "最近開いたファイルはまだありません。",
+    "recent.removeAria": "{path} を最近開いたファイルから削除",
+    "tree.truncationWarning":
+      "⚠ このプロジェクトには一度に表示できる数を超えるファイルがあります。下の一覧は不完全です。",
+    "tree.explorerLabel": "ファイルエクスプローラー",
+    "tree.loadFailed": "ファイルツリーの読み込みに失敗しました。",
+    "tree.loadFailedHttp": "ファイルツリーの読み込みに失敗しました（HTTP {status}）。",
+    "tree.expandDir": "ディレクトリを展開",
+    "tree.collapseDir": "ディレクトリを折りたたむ",
+    "tree.dirCopyTitle": "このディレクトリ内の全ファイルをコピー（Markdown）",
+    "tree.dirCopyAria": "{path} 以下の全ファイルをコピー",
+    "tree.rootName": "プロジェクトルート",
+    "tree.secretBadge": "⚠ 機密?",
+    "tree.secretTitle": "このファイル名は機密情報を含む可能性があります。",
+    "resizer.label": "エクスプローラーの幅を変更",
+    "promptComposer.ariaLabel": "プロンプトコンポーザー",
+    "promptComposer.title": "プロンプトコンポーザー",
+    "promptComposer.collapse": "プロンプトコンポーザーを折りたたむ",
+    "promptComposer.expand": "プロンプトコンポーザーを展開",
+    "composer.goal": "目的",
+    "composer.target": "対象",
+    "composer.output": "出力",
+    "composer.filename": "ファイル名",
+    "composer.filenamePlaceholder": "例: test-spec.md",
+    "composer.contextMode": "コンテキスト",
+    "composer.extra": "追加の指示（任意）",
+    "composer.generate": "プロンプトを生成",
+    "composer.copy": "プロンプトをコピー",
+    "composer.result": "生成されたプロンプト（編集可）",
+    "composer.resultPlaceholder": "上のオプションを選んで「プロンプトを生成」を押してください。",
+    "content.emptyHint": "エクスプローラーでファイルを選ぶと、ここに内容が表示されます。",
+    "filePanel.expand": "ファイルパネルを展開",
+    "filePanel.collapse": "ファイルパネルを折りたたむ",
+    "file.loading": "読み込み中…",
+    "file.loadFailed": "（読み込みに失敗しました: {err}）",
+    "file.loadFailedHttp": "（読み込みに失敗しました: HTTP {status}）",
+    "copy.copy": "コピー",
+    "copy.copied": "コピーしました!",
+    "copy.failed": "コピー失敗",
+    "copy.moreOptions": "その他のコピー方法",
+    "menu.copyFileAs": "ファイルを {format} でコピー",
+    "menu.copyReferenceOnly": "参照のみコピー",
+    "menu.copyReferenceAndCode": "参照 + コード をコピー",
+    "menu.copyAllCheckedAs": "チェック全件を {format} でコピー",
+    "menu.copyFileTree": "ファイルツリーをコピー",
+    "toolbar.oneFileOpen": "1 ファイルを表示中",
+    "toolbar.manyFilesOpen": "{count} ファイルを表示中",
+    "toolbar.copyAllChecked": "チェック全件をコピー",
+    "toast.copied": "クリップボードにコピーしました。",
+    "toast.copyFailed": "コピー失敗: {error}",
+    "toast.unknownError": "不明なエラー",
+  },
+};
+
+// The active UI locale. Resolved lazily on first `getLocale()` so this module
+// stays importable in a non-browser test runner (no window/navigator/
+// localStorage) without side effects at import time.
+let activeLocale = null;
+
+/** Determines the initial locale: a previously stored choice wins; otherwise
+ * `navigator.language` starting with "ja" auto-selects Japanese; everything
+ * else falls back to English. All storage/navigator access is guarded so a
+ * private-browsing or non-browser context degrades to "en" instead of
+ * throwing. */
+function detectInitialLocale() {
+  try {
+    const stored = localStorage.getItem(LOCALE_STORAGE_KEY);
+    if (SUPPORTED_LOCALES.includes(stored)) return stored;
+  } catch (err) {
+    // localStorage unavailable (private browsing, disabled, non-browser).
+  }
+  try {
+    const lang = typeof navigator !== "undefined" ? navigator.language || "" : "";
+    if (lang.toLowerCase().startsWith("ja")) return "ja";
+  } catch (err) {
+    // navigator unavailable; fall through to the English default.
+  }
+  return "en";
+}
+
+/** Returns the currently active locale, resolving (and caching) the initial
+ * one on first call. */
+export function getLocale() {
+  if (activeLocale === null) activeLocale = detectInitialLocale();
+  return activeLocale;
+}
+
+/** Switches the active locale, persists the choice (best-effort), and
+ * re-renders the whole UI so every label and -- if the generated prompt hasn't
+ * been hand-edited -- the prompt itself follow the new language. */
+export function setLocale(loc) {
+  activeLocale = SUPPORTED_LOCALES.includes(loc) ? loc : "en";
+  try {
+    localStorage.setItem(LOCALE_STORAGE_KEY, activeLocale);
+  } catch (err) {
+    // localStorage may be unavailable; the choice still applies for this
+    // session, it just won't be remembered across reloads.
+  }
+  renderAll();
+}
+
+/** Substitutes `{name}`-style placeholders in `template` from `params`, using
+ * a function replacement (not a string one) so a "$" in a substituted value
+ * is never interpreted as a replacement pattern, and so a value that itself
+ * contains a `{placeholder}` token is inserted verbatim rather than being
+ * re-substituted. */
+function substituteParams(template, params) {
+  if (!params) return template;
+  return template.replace(/\{(\w+)\}/g, (match, key) =>
+    key in params ? String(params[key]) : match
+  );
+}
+
+/** Pure message lookup for an explicit `locale`: returns that locale's string
+ * for `key`, falling back to English, then to the key itself (so a missing
+ * translation never renders as an empty label). Used by the DOM-free
+ * prompt/stats builders, which must be deterministic per-locale regardless of
+ * whatever locale the surrounding UI happens to be showing. */
+export function tr(locale, key, params) {
+  const table = MESSAGES[locale] || MESSAGES.en;
+  const value = table[key] ?? MESSAGES.en[key] ?? key;
+  return substituteParams(value, params);
+}
+
+/** UI-facing translation: `tr` against the currently active locale. */
+export function t(key, params) {
+  return tr(getLocale(), key, params);
+}
+
 const state = {
   entries: [],
   rootNode: null,
