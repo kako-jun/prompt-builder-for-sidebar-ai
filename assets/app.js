@@ -165,9 +165,8 @@ const MESSAGES = {
     "preset.groupTitle": "Quick select",
     "search.label": "Filter files by path",
     "search.placeholder": "Filter by path…",
-    "recent.sectionLabel": "Recently opened files",
     "recent.title": "Recently opened",
-    "recent.clear": "Clear",
+    "recent.clear": "Clear history",
     "recent.empty": "No recently opened files yet.",
     "recent.removeAria": "Remove {path} from recently opened",
     "tree.truncationWarning":
@@ -327,9 +326,8 @@ const MESSAGES = {
     "preset.groupTitle": "クイック選択",
     "search.label": "パスでファイルを絞り込む",
     "search.placeholder": "パスで絞り込み…",
-    "recent.sectionLabel": "最近開いたファイル",
     "recent.title": "最近開いたファイル",
-    "recent.clear": "クリア",
+    "recent.clear": "履歴をクリア",
     "recent.empty": "最近開いたファイルはまだありません。",
     "recent.removeAria": "{path} を最近開いたファイルから削除",
     "tree.truncationWarning":

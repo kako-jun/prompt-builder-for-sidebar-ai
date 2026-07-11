@@ -2001,6 +2001,15 @@ describe("tr", () => {
     assert.equal(tr("ja", "preset.groupTitle"), "クイック選択");
   });
 
+  test("distinguishes 'Clear history' (recent files) from 'Clear selection' (presets) in both locales (issue #26)", () => {
+    assert.equal(tr("en", "recent.clear"), "Clear history");
+    assert.equal(tr("ja", "recent.clear"), "履歴をクリア");
+    assert.equal(tr("en", "preset.clearSelection"), "Clear selection");
+    assert.equal(tr("ja", "preset.clearSelection"), "選択をクリア");
+    assert.notEqual(tr("en", "recent.clear"), tr("en", "preset.clearSelection"));
+    assert.notEqual(tr("ja", "recent.clear"), tr("ja", "preset.clearSelection"));
+  });
+
   test("falls back to English for an unsupported locale (its table is missing entirely)", () => {
     // MESSAGES has no "fr" table, so the lookup drops to the English one.
     assert.equal(tr("fr", "stats.none"), "No files selected.");
