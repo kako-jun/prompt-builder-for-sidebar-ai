@@ -360,6 +360,25 @@ mod tests {
     }
 
     #[test]
+    fn rendered_html_search_icon_is_decorative_and_label_survives() {
+        // issue #15 follow-up: the search box grew a decorative funnel <svg>.
+        // It must stay aria-hidden (so screen readers don't double-announce
+        // the filter box) and must not have displaced the existing
+        // <label for="search-input"> that actually names the field.
+        let html = rendered_index_html();
+        assert!(
+            html.contains(r#"<svg class="search-icon" viewBox="0 0 16 16" aria-hidden="true""#),
+            "the search icon should be a decorative, aria-hidden svg"
+        );
+        assert!(
+            html.contains(
+                r#"<label for="search-input" class="visually-hidden" data-i18n="search.label""#
+            ),
+            "the accessible label for the search input should still be present"
+        );
+    }
+
+    #[test]
     fn resolve_root_accepts_an_existing_directory() {
         let resolved = resolve_root(Path::new(".")).expect("current directory should resolve");
         assert!(resolved.is_absolute());
