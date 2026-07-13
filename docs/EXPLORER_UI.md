@@ -253,9 +253,15 @@ finishes loading (a checked-but-still-loading file counts toward the file
 count immediately but not yet toward the character count, and is called out
 explicitly, e.g. "3 files selected (1 still loading)", rather than silently
 under-reporting the total). This one line also doubles as the open-file
-count: checking/unchecking a file always opens/closes its panel in lockstep,
-so a separate "N files open" line next to it would only ever repeat the same
-number (issue #38 merged the two into this single line). Past roughly
+count: checking a file opens its panel and unchecking closes it, so the
+checked count and the open-file count converge to the same value (issue #38
+merged what used to be two lines into this single line). They can differ for
+a moment right after checking several files at once -- panels open one fetch
+at a time, so the open-file count catches up gradually rather than jumping
+immediately -- but the merged line's "still loading" phrasing already covers
+that transitional state, whereas the old two-line layout could briefly show
+two directly conflicting numbers (e.g. "1 file open" next to "10 files
+selected (10 still loading)") for the same instant. Past roughly
 200,000 characters the line also gets a "⚠ large selection" warning -- a
 soft, order-of-magnitude heuristic meant to catch an accidental
 "select-everything", not a hard limit enforced anywhere.

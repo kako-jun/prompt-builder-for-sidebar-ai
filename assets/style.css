@@ -1033,14 +1033,16 @@ body.resizing {
 }
 
 .content-toolbar-info {
-  display: flex;
-  flex-direction: column;
   min-width: 0;
 }
 
 /* Selection size statistics (issue #8): file/character/token counts.
    Also stands in for the open-file count, folded into this same line
-   as of #38 (the two numbers were always structurally identical). */
+   as of #38: `state.checked.size` and `state.openFiles.length` converge
+   to the same value (they can differ for an instant right after a bulk
+   check, since panels open one fetch at a time -- see the longer note on
+   `renderContentToolbar` in app.js), and merging removes the moment where
+   two separate lines could show visibly conflicting numbers. */
 .content-toolbar-stats {
   color: var(--text-dim);
   font-size: 0.75rem;

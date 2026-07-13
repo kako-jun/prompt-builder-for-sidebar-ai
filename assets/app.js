@@ -2305,11 +2305,23 @@ function globalCopyMenuItems() {
 }
 
 /** Rebuilds the content pane's toolbar: the selection size statistics
- * (issue #8, which already fold in the open-file count -- see #38) and the
- * "Copy all checked" button cluster. Called every time the open-files list
- * or a file's cached content might have changed (from `renderFilePanels`, so
- * the character/token counts stay live as each checked file's content
- * finishes loading) and once at startup (from `init`), since
+ * (issue #8) and the "Copy all checked" button cluster. The stats line also
+ * stands in for what used to be a separate "N files open" line (issue #38
+ * merged the two): `state.checked.size` and `state.openFiles.length`
+ * converge to the same value, since checking a file opens its panel and
+ * unchecking closes it, so a second line reporting the open-file count
+ * would only ever repeat the first once things settle. The two counts
+ * aren't always equal in the instant right after a bulk check, though --
+ * `syncOpenFilesWithChecked` opens panels by awaiting each file's fetch in
+ * turn, so `openFiles.length` catches up to `checked.size` one file at a
+ * time rather than jumping immediately -- but merging the lines removes
+ * what used to be two lines that could show directly conflicting numbers in
+ * that same instant (e.g. "1 file open" next to "10 files selected (10
+ * still loading)"); the merged line's own "pending" phrasing already covers
+ * that transitional state. Called every time the open-files list or a
+ * file's cached content might have changed (from `renderFilePanels`, so the
+ * character/token counts stay live as each checked file's content finishes
+ * loading) and once at startup (from `init`), since
  * `state.openFiles`/`state.checked` are otherwise only updated as a side
  * effect of tree/checkbox interactions this toolbar has no other hook
  * into. */
