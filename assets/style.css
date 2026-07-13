@@ -90,6 +90,47 @@ button {
   color: var(--text);
 }
 
+/* Issue #36: the collapsed state of the notice above -- shown instead of
+   `.security-notice` (never both at once, see setSecurityNoticeVisible in
+   app.js) in the exact same top-of-page slot, so dismissing/reopening is a
+   single in-place toggle rather than moving the control to a different part
+   of the UI (the brand row's old "🛡 Safety" button). Deliberately slimmer
+   and quieter than the full notice -- `--text-dim` at rest, only shifting to
+   the same `--warning` color on hover/focus -- since its job is to stay
+   available without competing for attention once the user has already read
+   the full disclosure once. */
+.security-notice-collapsed {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  width: 100%;
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  padding: 0.25rem 0.9rem;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 0.75rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.security-notice-collapsed[hidden] {
+  display: none;
+}
+
+.security-notice-collapsed:hover,
+.security-notice-collapsed:focus-visible {
+  color: var(--warning);
+  border-color: var(--warning);
+}
+
+.security-notice-collapsed:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
 .app {
   display: flex;
   flex: 1;
@@ -113,15 +154,31 @@ button {
   padding: 0.75rem;
 }
 
-/* Brand row (issue #15): the top row of the explorer pane, with the app logo
-   on the left and the language toggle on the right. The logo carries the
-   branding (the full app name is too long to spell out here), so no name text
-   is drawn -- it lives in the logo's alt/title instead. */
+/* Brand row (issue #15, revised by issue #35): the top row of the explorer
+   pane, with the app logo + name on the left (`.brand-identity`) and the
+   language toggle on the right (`.locale-switcher`). */
 .brand-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 0.5rem;
+}
+
+/* Groups the icon and the visible app name so they act as a single flex
+   child of `.brand-row`. `min-width: 0` lets it shrink below its content's
+   natural width -- needed so `.app-name`'s ellipsis can kick in at the
+   explorer-pane's 220px min-width instead of overflowing the row -- while
+   `.locale-switcher` keeps its natural size (`flex-shrink: 0` below), so the
+   language toggle never loses space to the name. Even at 220px this group
+   can shrink all the way down to just the logo's width without the row
+   overflowing, since `.app-name` itself has nowhere to go but 0 in the
+   worst case (see its own comment). */
+.brand-identity {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-width: 0;
+  flex: 1 1 auto;
 }
 
 /* The app mark, rendered from the embedded icon.png data URI. Shown as a small
@@ -137,42 +194,35 @@ button {
   border-radius: 5px;
 }
 
-/* Issue #28: groups the always-visible "🛡 Safety" re-open control with the
-   language toggle at the brand row's right edge, so both compact controls
-   sit together rather than the safety button floating on its own. */
-.brand-row-controls {
-  display: flex;
-  align-items: center;
-  gap: 0.6rem;
-}
-
-.security-reopen-button {
-  display: flex;
-  align-items: center;
-  gap: 0.3rem;
-  background: transparent;
-  border: 1px solid var(--border);
-  color: var(--text-dim);
-  border-radius: 4px;
-  padding: 0.2rem 0.45rem;
-  font: inherit;
-  font-size: 0.75rem;
-  cursor: pointer;
+/* Issue #35: the full app name as visible text next to the logo (issue #15
+   had left it hover-only, in the logo's alt/title, which stays as a
+   fallback). It's a proper noun, so it's the same string in every locale --
+   no data-i18n key. `min-width: 0` + `overflow: hidden` +
+   `text-overflow: ellipsis` means it degrades gracefully at the
+   explorer-pane's 220px min-width (where the logo and the language toggle
+   together leave the name very little room) instead of ever overflowing the
+   row -- down to trimming to nothing rather than wrapping or spilling out,
+   with the full name still reachable via `title` / the logo's `alt`. */
+.app-name {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 0.8rem;
+  font-weight: 600;
   white-space: nowrap;
-}
-
-.security-reopen-button:hover {
-  color: var(--warning);
-  border-color: var(--warning);
+  text-overflow: ellipsis;
 }
 
 /* Language toggle (issue #22): a compact EN / 日本語 switcher sharing the brand
-   row at the top of the explorer pane (issue #15), pushed to its right edge. */
+   row at the top of the explorer pane (issue #15), pushed to its right edge.
+   `flex-shrink: 0` (issue #35) keeps it at full size even when
+   `.brand-identity` is squeezed for space -- the name gives way first. */
 .locale-switcher {
   display: flex;
   align-items: center;
   justify-content: flex-end;
   gap: 0.4rem;
+  flex-shrink: 0;
   font-size: 0.75rem;
   color: var(--text-dim);
 }

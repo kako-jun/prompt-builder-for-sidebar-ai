@@ -164,8 +164,7 @@ const MESSAGES = {
     "security.notice":
       "⚠ What you copy goes to the third-party AI you picked. Treat the files you open as untrusted input, too -- their contents can include text that steers the AI. What you share is your call.",
     "security.dismiss": "Dismiss this notice",
-    "security.reopenLabel": "Safety",
-    "security.reopenAria": "Show the safety notice",
+    "security.collapsedLabel": "Safety notice",
     "locale.label": "Language",
     "root.loading": "Loading…",
     "root.loadFailed": "(failed to load root)",
@@ -331,8 +330,7 @@ const MESSAGES = {
     "security.notice":
       "⚠ コピーした内容は、あなたが選んだ外部のAIに渡ります。開いたファイル自体も「信頼できない入力」として扱ってください（中身にAIを誘導する文が紛れていることがあります）。何を共有するかはあなた次第です。",
     "security.dismiss": "この通知を閉じる",
-    "security.reopenLabel": "安全性",
-    "security.reopenAria": "安全性の通知を表示",
+    "security.collapsedLabel": "安全性の通知",
     "locale.label": "言語",
     "root.loading": "読み込み中…",
     "root.loadFailed": "（ルートの読み込みに失敗しました）",
@@ -2435,7 +2433,7 @@ function createRecentReopenIcon() {
 // browsing, disabled, non-browser) degrades to "not dismissed" / "the choice
 // just doesn't stick across reloads" rather than throwing.
 
-function loadSecurityNoticeDismissed() {
+export function loadSecurityNoticeDismissed() {
   try {
     return localStorage.getItem(SECURITY_NOTICE_STORAGE_KEY) === "1";
   } catch (err) {
@@ -2443,7 +2441,7 @@ function loadSecurityNoticeDismissed() {
   }
 }
 
-function saveSecurityNoticeDismissed(dismissed) {
+export function saveSecurityNoticeDismissed(dismissed) {
   try {
     if (dismissed) {
       localStorage.setItem(SECURITY_NOTICE_STORAGE_KEY, "1");
@@ -2456,13 +2454,38 @@ function saveSecurityNoticeDismissed(dismissed) {
   }
 }
 
-/** Shows/hides `#security-notice` via the `hidden` attribute (not a class or
- * inline style) so `role="note"` keeps working normally when visible and the
- * element is removed from the accessibility tree -- not just visually
- * masked -- when dismissed. */
+/** Pure computation of what the two security-notice elements' DOM state
+ * should be for a given visibility: never both `#security-notice` and its
+ * collapsed `#security-notice-collapsed` strip shown at once, and
+ * `aria-expanded` on the collapsed strip tracking whether the notice it
+ * controls is currently expanded (issue #36: dismissing/reopening is now a
+ * single in-place toggle in this one page slot, not a separate button
+ * elsewhere in the UI). Kept side-effect-free so it's testable in Node
+ * without a DOM (issue #35/#36, should-1); `setSecurityNoticeVisible` below
+ * is the thin DOM-writing wrapper around it. */
+export function computeSecurityNoticeDomState(visible) {
+  return {
+    noticeHidden: !visible,
+    collapsedHidden: visible,
+    collapsedAriaExpanded: visible ? "true" : "false",
+  };
+}
+
+/** Shows the full `#security-notice` or its collapsed `#security-notice-
+ * collapsed` strip -- never both -- via the `hidden` attribute (not a class
+ * or inline style) so `role="note"` keeps working normally on the full
+ * notice when it's visible and each element is removed from the
+ * accessibility tree -- not just visually masked -- when it isn't the one
+ * showing. */
 function setSecurityNoticeVisible(visible) {
-  if (!el.securityNotice) return;
-  el.securityNotice.hidden = !visible;
+  const domState = computeSecurityNoticeDomState(visible);
+  if (el.securityNotice) {
+    el.securityNotice.hidden = domState.noticeHidden;
+  }
+  if (el.securityNoticeCollapsed) {
+    el.securityNoticeCollapsed.hidden = domState.collapsedHidden;
+    el.securityNoticeCollapsed.setAttribute("aria-expanded", domState.collapsedAriaExpanded);
+  }
 }
 
 function wireSecurityNotice() {
@@ -2472,10 +2495,15 @@ function wireSecurityNotice() {
       setSecurityNoticeVisible(false);
     });
   }
-  if (el.securityReopen) {
-    el.securityReopen.addEventListener("click", () => {
+  if (el.securityNoticeCollapsed) {
+    el.securityNoticeCollapsed.addEventListener("click", () => {
       saveSecurityNoticeDismissed(false);
       setSecurityNoticeVisible(true);
+      // The clicked strip itself becomes `hidden` by the call above, which
+      // would otherwise drop focus to `<body>` (issue #35/#36, should-2:
+      // confirmed on-device). Move it to the dismiss ("x") button so
+      // keyboard/AT users land somewhere actionable in the reopened notice.
+      el.securityNoticeDismiss?.focus();
     });
   }
 }
@@ -2918,7 +2946,7 @@ if (typeof document !== "undefined") {
     localeSelect: document.getElementById("locale-select"),
     securityNotice: document.getElementById("security-notice"),
     securityNoticeDismiss: document.getElementById("security-notice-dismiss"),
-    securityReopen: document.getElementById("security-reopen"),
+    securityNoticeCollapsed: document.getElementById("security-notice-collapsed"),
     rootBasename: document.getElementById("root-basename"),
     rootPath: document.getElementById("root-path"),
     treeRoot: document.getElementById("tree-root"),
