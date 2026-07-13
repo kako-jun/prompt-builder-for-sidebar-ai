@@ -2734,14 +2734,16 @@ function wirePromptComposer() {
   // out a second "Generate" click racing the first one's still-pending fetch
   // and overwriting the result with a stale response (and rules out "Copy"
   // grabbing a known-stale textarea value mid-regeneration).
+  //
+  // Locking/unlocking goes through `beginPromptGenerationUiLock`/
+  // `endPromptGenerationUiLock` rather than setting `.disabled` directly --
+  // see that pair's doc comment for why (issue #43 re-review follow-up).
   el.promptGenerate.addEventListener("click", async () => {
-    el.promptGenerate.disabled = true;
-    el.promptCopy.disabled = true;
+    beginPromptGenerationUiLock();
     try {
       await generatePrompt();
     } finally {
-      el.promptGenerate.disabled = false;
-      el.promptCopy.disabled = false;
+      endPromptGenerationUiLock();
     }
   });
 
@@ -2784,6 +2786,46 @@ function wirePromptComposer() {
  * is stale and must not overwrite `el.promptResult`/`state` -- see the guard
  * near the end of `generatePrompt()`. */
 let promptGenerationSeq = 0;
+
+/** Counts `generatePrompt()` calls currently holding the Generate/Copy
+ * buttons' UI lock (issue #43 re-review follow-up). The Generate click
+ * handler and `regeneratePromptIfUnedited()` each disable-await-finally
+ * around their own `generatePrompt()` call, and when their two calls
+ * overlap -- e.g. a Generate click's fetch is still pending when a locale
+ * switch fires `regeneratePromptIfUnedited()` -- `promptGenerationSeq` above
+ * only protects `el.promptResult`/`state` from being overwritten by the
+ * stale one; it does nothing to stop that stale call's own `finally` from
+ * running first and re-enabling both buttons while the newer call is still
+ * in flight. That window let a user Copy the pre-switch (stale-locale) text.
+ * A plain boolean lock has the same problem in a different shape: whichever
+ * call's `finally` runs first sets it back to `false` regardless of whether
+ * the other call is still running. A depth counter fixes this by only
+ * unlocking once every call that locked has also unlocked -- use
+ * `beginPromptGenerationUiLock`/`endPromptGenerationUiLock` below instead of
+ * writing `el.promptGenerate.disabled`/`el.promptCopy.disabled` directly. */
+let promptGenerationInFlight = 0;
+
+/** Pairs with `endPromptGenerationUiLock()` below; see
+ * `promptGenerationInFlight`'s doc comment for why this exists instead of
+ * each caller setting `.disabled` itself. */
+function beginPromptGenerationUiLock() {
+  promptGenerationInFlight++;
+  el.promptGenerate.disabled = true;
+  el.promptCopy.disabled = true;
+}
+
+/** Pairs with `beginPromptGenerationUiLock()` above. Only re-enables the
+ * buttons once every in-flight lock has been released, so an earlier call's
+ * `finally` can never re-enable the buttons out from under a still-pending
+ * later call (issue #43 re-review follow-up; see `promptGenerationInFlight`'s
+ * doc comment). */
+function endPromptGenerationUiLock() {
+  promptGenerationInFlight = Math.max(0, promptGenerationInFlight - 1);
+  if (promptGenerationInFlight === 0) {
+    el.promptGenerate.disabled = false;
+    el.promptCopy.disabled = false;
+  }
+}
 
 /** Marks the composer's last-generated output as stale relative to its
  * current inputs (issue #43): the Generate button's "needs regenerating"
@@ -3112,25 +3154,28 @@ function syncLocaleControl() {
  * regenerates it in the current locale; otherwise leaves the textarea alone so
  * manual edits (or an intentionally blank result) survive the language switch.
  *
- * Disables the Generate/Copy buttons for the duration, same as the Generate
- * button's own click handler in `wirePromptComposer` (and for the same
- * reason): without this, a locale switch's regeneration is an `await`-ing
- * async call that leaves Copy clickable the whole time, so a user could copy
- * the pre-switch (stale-locale) text while the new one is still in flight
- * (issue #43 self-review follow-up). `renderAll` still calls this
- * fire-and-forget -- it doesn't await the returned promise -- since nothing
- * about the locale switch itself depends on the regeneration finishing;
- * `generatePrompt()` writes the textarea (and this function re-enables the
- * buttons) whenever it resolves. */
+ * Locks the Generate/Copy buttons for the duration via
+ * `beginPromptGenerationUiLock`/`endPromptGenerationUiLock`, same as the
+ * Generate button's own click handler in `wirePromptComposer` (and for the
+ * same reason): without this, a locale switch's regeneration is an
+ * `await`-ing async call that leaves Copy clickable the whole time, so a user
+ * could copy the pre-switch (stale-locale) text while the new one is still in
+ * flight (issue #43 self-review follow-up). Going through the shared lock
+ * pair rather than setting `.disabled` directly matters when this call
+ * overlaps with the Generate click handler's own call -- see
+ * `promptGenerationInFlight`'s doc comment for the race that caused (issue
+ * #43 re-review follow-up). `renderAll` still calls this fire-and-forget --
+ * it doesn't await the returned promise -- since nothing about the locale
+ * switch itself depends on the regeneration finishing; `generatePrompt()`
+ * writes the textarea (and this function releases its share of the lock)
+ * whenever it resolves. */
 async function regeneratePromptIfUnedited() {
   if (state.promptGenerated && el.promptResult.value === state.lastGeneratedPrompt) {
-    el.promptGenerate.disabled = true;
-    el.promptCopy.disabled = true;
+    beginPromptGenerationUiLock();
     try {
       await generatePrompt();
     } finally {
-      el.promptGenerate.disabled = false;
-      el.promptCopy.disabled = false;
+      endPromptGenerationUiLock();
     }
   }
 }
