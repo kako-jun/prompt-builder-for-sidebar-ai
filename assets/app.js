@@ -223,8 +223,6 @@ const MESSAGES = {
     "menu.copyReferenceAndCode": "Copy reference + code",
     "menu.copyAllCheckedAs": "Copy all checked as {format}",
     "menu.copyFileTree": "Copy file tree",
-    "toolbar.oneFileOpen": "1 file open",
-    "toolbar.manyFilesOpen": "{count} files open",
     "toolbar.copyAllChecked": "Copy all checked",
     "toast.copied": "Copied to clipboard.",
     "toast.copyFailed": "Copy failed: {error}",
@@ -389,8 +387,6 @@ const MESSAGES = {
     "menu.copyReferenceAndCode": "参照 + コード をコピー",
     "menu.copyAllCheckedAs": "チェック全件を {format} でコピー",
     "menu.copyFileTree": "ファイルツリーをコピー",
-    "toolbar.oneFileOpen": "1 ファイルを表示中",
-    "toolbar.manyFilesOpen": "{count} ファイルを表示中",
     "toolbar.copyAllChecked": "チェック全件をコピー",
     "toast.copied": "クリップボードにコピーしました。",
     "toast.copyFailed": "コピー失敗: {error}",
@@ -2308,19 +2304,28 @@ function globalCopyMenuItems() {
   return items;
 }
 
-/** Rebuilds the content pane's toolbar: the "N files open" count, the
- * selection size statistics (issue #8), and the "Copy all checked" button
- * cluster. Called every time the open-files list or a file's cached content
- * might have changed (from `renderFilePanels`, so the character/token counts
- * stay live as each checked file's content finishes loading) and once at
- * startup (from `init`), since `state.openFiles`/`state.checked` are
- * otherwise only updated as a side effect of tree/checkbox interactions this
- * toolbar has no other hook into. */
+/** Rebuilds the content pane's toolbar: the selection size statistics
+ * (issue #8) and the "Copy all checked" button cluster. The stats line also
+ * stands in for what used to be a separate "N files open" line (issue #38
+ * merged the two): `state.checked.size` and `state.openFiles.length`
+ * converge to the same value, since checking a file opens its panel and
+ * unchecking closes it, so a second line reporting the open-file count
+ * would only ever repeat the first once things settle. The two counts
+ * aren't always equal in the instant right after a bulk check, though --
+ * `syncOpenFilesWithChecked` opens panels by awaiting each file's fetch in
+ * turn, so `openFiles.length` catches up to `checked.size` one file at a
+ * time rather than jumping immediately -- but merging the lines removes
+ * what used to be two lines that could show directly conflicting numbers in
+ * that same instant (e.g. "1 file open" next to "10 files selected (10
+ * still loading)"); the merged line's own "pending" phrasing already covers
+ * that transitional state. Called every time the open-files list or a
+ * file's cached content might have changed (from `renderFilePanels`, so the
+ * character/token counts stay live as each checked file's content finishes
+ * loading) and once at startup (from `init`), since
+ * `state.openFiles`/`state.checked` are otherwise only updated as a side
+ * effect of tree/checkbox interactions this toolbar has no other hook
+ * into. */
 function renderContentToolbar() {
-  const count = state.openFiles.length;
-  el.contentToolbarCount.textContent =
-    count === 1 ? t("toolbar.oneFileOpen") : t("toolbar.manyFilesOpen", { count });
-
   // Order doesn't matter for computeSelectionStats's sums, so skip the sort
   // this function's other Array.from(state.checked) call sites need for
   // deterministic output ordering -- this one has no such requirement, and
@@ -2956,7 +2961,6 @@ if (typeof document !== "undefined") {
     recentClear: document.getElementById("recent-clear"),
     filePanels: document.getElementById("file-panels"),
     contentEmptyHint: document.getElementById("content-empty-hint"),
-    contentToolbarCount: document.getElementById("content-toolbar-count"),
     contentToolbarStats: document.getElementById("content-toolbar-stats"),
     contentToolbarActions: document.getElementById("content-toolbar-actions"),
     explorerPane: document.getElementById("explorer-pane"),

@@ -1019,6 +1019,22 @@ describe("computeSelectionStats", () => {
     const over = computeSelectionStats(["a.js"], new Map([["a.js", "x".repeat(200_001)]]));
     assert.equal(over.isLarge, true);
   });
+
+  test("counts a file whose load failed as loaded, not pending, once the cache holds its error message text (openFile stores the error string itself in fileContentCache on both HTTP and network failure, so an undefined-vs-set check can't tell 'still fetching' apart from 'fetch failed')", () => {
+    const errorText = tr("en", "file.loadFailedHttp", { status: 404 });
+    const cache = new Map([["broken.js", errorText]]);
+    const stats = computeSelectionStats(["broken.js"], cache);
+    assert.equal(stats.fileCount, 1);
+    assert.equal(stats.pendingCount, 0);
+  });
+
+  test("charCount includes the length of a load-failure error message, not just successfully loaded content (documents current behavior as a regression-detection baseline; not an assertion that this is the desired behavior -- see issue #38)", () => {
+    const errorText = tr("en", "file.loadFailedHttp", { status: 500 });
+    const cache = new Map([["broken.js", errorText]]);
+    const stats = computeSelectionStats(["broken.js"], cache);
+    assert.equal(stats.charCount, errorText.length);
+    assert.equal(stats.estimatedTokens, Math.ceil(errorText.length / 4));
+  });
 });
 
 describe("formatWithThousandsSeparator", () => {
@@ -1078,6 +1094,32 @@ describe("formatSelectionStats", () => {
 
     const large = computeSelectionStats(["a.js"], new Map([["a.js", "x".repeat(200_001)]]));
     assert.match(formatSelectionStats(large), /⚠ large selection$/);
+  });
+
+  test("shows both the pending note and the large-selection warning together when both apply (decision-table row: fileCount=1, pendingCount>0, isLarge=true)", () => {
+    // computeSelectionStats can never itself produce this combination for a
+    // single checked file (a still-pending file contributes 0 characters, so
+    // isLarge can't be true while that lone file is also the pending one) --
+    // constructing the stats object directly exercises formatSelectionStats's
+    // own branch logic, independent of how a stats value is normally derived.
+    const stats = { fileCount: 1, pendingCount: 1, charCount: 200_001, estimatedTokens: 50_001, isLarge: true };
+    const output = formatSelectionStats(stats);
+    assert.match(output, /\(1 still loading\)/);
+    assert.match(output, /⚠ large selection$/);
+  });
+
+  test("shows the multi-file phrase, the pending note, and the large-selection warning together (decision-table row: fileCount=N>1, pendingCount>0, isLarge=true)", () => {
+    // Unlike the single-file case above, this combination *is* reachable via
+    // a real selection: one checked file's cached content alone exceeds the
+    // large-selection threshold while another checked file hasn't loaded yet.
+    const stats = computeSelectionStats(
+      ["a.js", "b.js"],
+      new Map([["a.js", "x".repeat(200_001)]])
+    );
+    const output = formatSelectionStats(stats);
+    assert.match(output, /^2 files selected/);
+    assert.match(output, /\(1 still loading\)/);
+    assert.match(output, /⚠ large selection$/);
   });
 });
 
@@ -2249,6 +2291,15 @@ describe("formatSelectionStats - i18n", () => {
 
     const large = computeSelectionStats(["a.js"], new Map([["a.js", "x".repeat(200_001)]]));
     assert.match(formatSelectionStats(large, "ja"), /· ⚠ 選択が大きすぎます$/);
+  });
+
+  test("shows both the Japanese pending note and the Japanese large-selection warning together when both apply (decision-table row: fileCount=1, pendingCount>0, isLarge=true)", () => {
+    // See the English equivalent above for why this stats object is
+    // constructed directly rather than derived via computeSelectionStats.
+    const stats = { fileCount: 1, pendingCount: 1, charCount: 200_001, estimatedTokens: 50_001, isLarge: true };
+    const output = formatSelectionStats(stats, "ja");
+    assert.match(output, /（1 件読み込み中）/);
+    assert.match(output, /· ⚠ 選択が大きすぎます$/);
   });
 });
 
