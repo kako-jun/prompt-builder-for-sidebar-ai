@@ -64,6 +64,7 @@ to an AI API itself and never writes to the served directory.
 | A non-regular file (FIFO, device, socket) is opened and blocks the request forever (e.g. a FIFO with no writer). | Never opened at all: both `discover_tree` and `resolve_regular_file` check the file type first and skip/refuse anything that isn't a regular file or directory. |
 | Prompt injection: a file's content contains text written to manipulate whatever AI later reads the copied prompt. | **Not preventable by this tool** -- there is no reliable way to distinguish "legitimate file content" from "content crafted to look like an instruction" from outside the AI itself. Disclosed instead: an on-page notice (see `assets/index.html`'s `#security-notice`) and this document. |
 | Copied content is sent to a third-party AI provider the user didn't fully consider (privacy). | **The user's judgment, not this tool's to enforce** -- disclosed via the same on-page notice and the README's disclaimer. This tool's own job ends at "put correctly-scoped, unambiguously-delimited text on the clipboard." |
+| `ROOT` given as a GitHub URL (issue #14) clones from an unexpected location, or the clone itself is unbounded. | The clone URL is always reconstructed as `https://github.com/{owner}/{repo}.git` from the parsed owner/repo, never the raw input string, so the CLI argument can't inject a different protocol or host at the URL-parsing level. Once on disk, the clone is validated identically to any other local root -- no new logic needed there. **Not mitigated**: `git clone --depth 1` bounds history but not working-tree size, and the clone has no timeout; see "Explicitly out of scope" below. |
 
 Issue #9 originally shipped `#security-notice` with no dismiss control and no
 "once per session" concession, on the theory that a security disclosure
@@ -80,7 +81,6 @@ display. Issue #36 changed *where* it reopens from: dismissing no longer
 hides the notice outright, it collapses the same top-of-page slot into a thin
 "🛡 Safety notice" strip that expands the full notice again on click, rather
 than the earlier design's separate "🛡 Safety" button in the brand row.
-| `ROOT` given as a GitHub URL (issue #14) clones from an unexpected location, or the clone itself is unbounded. | The clone URL is always reconstructed as `https://github.com/{owner}/{repo}.git` from the parsed owner/repo, never the raw input string, so the CLI argument can't inject a different protocol or host at the URL-parsing level. Once on disk, the clone is validated identically to any other local root -- no new logic needed there. **Not mitigated**: `git clone --depth 1` bounds history but not working-tree size, and the clone has no timeout; see "Explicitly out of scope" below. |
 
 ## Explicitly out of scope
 

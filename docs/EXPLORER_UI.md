@@ -48,7 +48,7 @@ The current behavior:
   (`pbsa-security-notice-dismissed`), the same best-effort pattern as the
   locale/recent-files choices -- a private-browsing or storage-disabled
   context just won't remember the dismissal across reloads.
-- Issue #28 first re-shown the dismissed notice via a separate "🛡 Safety"
+- Issue #28 first re-showed the dismissed notice via a separate "🛡 Safety"
   button living in the brand row -- a different location from the ✕ that
   closed it. Issue #36 replaced that with an in-place collapse: dismissing
   the notice doesn't hide it entirely, it collapses the same top-of-page slot
