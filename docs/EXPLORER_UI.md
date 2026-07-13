@@ -262,6 +262,26 @@ choices; the result is otherwise freely editable, and "Copy prompt" always
 copies whatever is currently in that textarea (including manual edits), not
 a freshly regenerated version.
 
+Both buttons carry a small notification-dot badge (issue #43) that tracks
+whether the two of them are in sync with the rest of the composer. "Generate
+prompt" lights up whenever any composer input changes after the last
+generate — either of the four selects, the filename field, the additional-
+instructions field, the checked-file selection (individually, via a preset,
+or via "reopen" from the Recently-opened list), or a line selection — and
+goes dark the moment "Generate prompt" is clicked. "Copy prompt" lights up
+right after a successful generate (there's a fresh result that hasn't been
+copied yet) and goes dark once "Copy prompt" is clicked and the copy actually
+succeeds; a failed copy leaves it lit, since there's still nothing copied.
+Changing any composer input after a generate turns "Generate prompt" back on
+and "Copy prompt" back off, since the freshly generated text is no longer
+current either. Hand-editing the result textarea itself does not affect
+either badge -- that's a different concept from a composer input changing
+(see "Language (English / Japanese)" above for the similar-but-distinct "was
+this hand-edited" check the language switcher makes). Neither badge is
+color-only: "Generate prompt" carries its hint in a `title` tooltip, and
+"Copy prompt" carries its hint in `aria-label` (not `title`, which briefly
+belongs to the transient "Copied!"/"Copy failed" feedback instead).
+
 ## Selection size statistics
 
 The content toolbar shows a single live line of statistics for the currently

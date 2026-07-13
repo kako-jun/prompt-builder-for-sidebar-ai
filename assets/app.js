@@ -216,6 +216,8 @@ const MESSAGES = {
     "composer.extra": "Additional instructions (optional)",
     "composer.generate": "Generate prompt",
     "composer.copy": "Copy prompt",
+    "composer.needsRegenerateTitle": "Settings have changed since the last generate — regenerate to include them.",
+    "composer.needsCopyTitle": "Not copied yet.",
     "composer.result": "Generated prompt (editable)",
     "composer.resultPlaceholder": "Choose options above and click “Generate prompt”.",
     "content.emptyHint": "Select files in the explorer to see their contents here.",
@@ -390,6 +392,8 @@ const MESSAGES = {
     "composer.extra": "追加の指示（任意）",
     "composer.generate": "プロンプトを生成",
     "composer.copy": "プロンプトをコピー",
+    "composer.needsRegenerateTitle": "前回の生成後に設定が変わりました。再生成してください。",
+    "composer.needsCopyTitle": "まだコピーしていません。",
     "composer.result": "生成されたプロンプト（編集可）",
     "composer.resultPlaceholder": "上のオプションを選んで「プロンプトを生成」を押してください。",
     "content.emptyHint": "エクスプローラーでファイルを選ぶと、ここに内容が表示されます。",
@@ -512,6 +516,16 @@ const state = {
   // clobbered).
   lastGeneratedPrompt: "",
   promptGenerated: false,
+  // "Needs regenerating" / "needs copying" badge state (issue #43). `promptDirty`
+  // starts `true` because "never generated yet" is itself a stale state worth
+  // flagging; `promptCopied` starts `false` because there is nothing to have
+  // copied yet. Both are driven exclusively through `markPromptDirty()` (every
+  // composer-input change) and `generatePrompt()`/the Copy button's click
+  // handler (see `updatePromptActionBadges` for how these two flags map onto
+  // the actual button badges) -- never by hand-editing `#prompt-result`, which
+  // is a deliberately different concept (see `regeneratePromptIfUnedited`).
+  promptDirty: true,
+  promptCopied: false,
   // Last tree/root load-failure state, as `{ key, params }` (or null when the
   // load succeeded). Kept so a locale switch can re-render the failure message
   // in the new language instead of blanking it out (issue #22): `renderTree`
@@ -833,6 +847,7 @@ function handleCheckboxChange(node, isChecked) {
   }
   renderTree();
   syncOpenFilesWithChecked();
+  markPromptDirty();
 }
 
 // ---- Presets ----
@@ -858,6 +873,7 @@ function applyPreset(preset) {
 
   renderTree();
   syncOpenFilesWithChecked();
+  markPromptDirty();
 }
 
 export function extensionOf(path) {
@@ -1850,6 +1866,7 @@ function setLineSelection(path, anchor, endpointA, endpointB, writeHash = true) 
   const end = Math.max(endpointA, endpointB);
   state.lineSelections.set(path, { anchor, start, end });
   updateLineSelectionDom(path);
+  markPromptDirty();
 
   if (writeHash) {
     writeRefToHash(formatLinesRef(path, start, end));
@@ -2602,6 +2619,7 @@ function reopenFromRecent(path) {
   state.checked.add(path);
   renderTree();
   syncOpenFilesWithChecked();
+  markPromptDirty();
 }
 
 // ---- Explorer pane resizer ----
@@ -2697,6 +2715,19 @@ function wirePromptComposer() {
   el.promptOutput.addEventListener("change", updatePromptFilenameVisibility);
   updatePromptFilenameVisibility();
 
+  // "Needs regenerating" badge triggers (issue #43): every composer input
+  // that `generatePrompt()` reads from. `state.checked`/`state.lineSelections`
+  // are covered separately, via `markPromptDirty()` calls inside their own
+  // aggregation points (`handleCheckboxChange`, `applyPreset`,
+  // `setLineSelection`, `reopenFromRecent`) rather than here.
+  for (const select of [el.promptGoal, el.promptTarget, el.promptOutput, el.promptContextMode]) {
+    select.addEventListener("change", markPromptDirty);
+  }
+  for (const field of [el.promptFilename, el.promptExtra]) {
+    field.addEventListener("input", markPromptDirty);
+  }
+  updatePromptActionBadges();
+
   // Disabling both buttons for the duration of `generatePrompt()` (an
   // `await`-ing async function) isn't just UX polish: a disabled button
   // can't dispatch a "click" event at all, so this is what actually rules
@@ -2714,8 +2745,18 @@ function wirePromptComposer() {
     }
   });
 
-  el.promptCopy.addEventListener("click", () => {
-    copyToClipboardWithFeedback(el.promptResult.value, el.promptCopy);
+  el.promptCopy.addEventListener("click", async () => {
+    const result = await copyToClipboardWithFeedback(el.promptResult.value, el.promptCopy);
+    // Only a *successful* copy clears the "needs copying" badge (issue #43) --
+    // on failure it's left exactly as `copyToClipboardWithFeedback`'s own
+    // transient "Copy failed" feedback already reports (`flashCopyFeedback`
+    // owns `el.promptCopy`'s `title` for that; leaving `state.promptCopied`
+    // untouched here means `updatePromptActionBadges` doesn't need to run at
+    // all, so there's nothing to race against it).
+    if (result.ok === true) {
+      state.promptCopied = true;
+      updatePromptActionBadges();
+    }
   });
 
   el.promptComposerToggle.addEventListener("click", () => {
@@ -2725,6 +2766,56 @@ function wirePromptComposer() {
     el.promptComposerToggle.setAttribute("aria-expanded", String(collapsed));
     updateComposerToggleAria();
   });
+}
+
+/** Marks the composer's last-generated output as stale relative to its
+ * current inputs (issue #43): the Generate button's "needs regenerating"
+ * badge should be lit, and since there's now nothing freshly generated left
+ * to copy, the Copy button's "needs copying" badge should go dark along with
+ * it. Called from every place that changes a composer input -- the four
+ * `<select>`s and the filename/extra-instructions fields directly (wired in
+ * `wirePromptComposer`), plus `state.checked`/`state.lineSelections`'s own
+ * aggregation points (`handleCheckboxChange`, `applyPreset`,
+ * `setLineSelection`, `reopenFromRecent`) -- but deliberately NOT from
+ * editing `#prompt-result` itself: a hand-edit of the generated text is not
+ * an input changing, it's the entire point of leaving the result editable
+ * (see `regeneratePromptIfUnedited`'s doc comment for the separate "was it
+ * hand-edited" concept this must not be confused with). */
+function markPromptDirty() {
+  state.promptDirty = true;
+  state.promptCopied = false;
+  updatePromptActionBadges();
+}
+
+/** Reflects `state.promptDirty`/`state.promptCopied` onto the Generate/Copy
+ * buttons as small notification-dot badges (issue #43; the dot itself is a
+ * CSS `::after` driven by the `needs-regenerate`/`needs-copy` classes toggled
+ * here -- see style.css) plus a text alternative, so neither badge depends on
+ * color alone. "Needs copying" is true only once a prompt exists, is not
+ * stale, and hasn't been copied yet -- `!state.promptDirty` already implies a
+ * prompt has been generated, since `promptDirty` only ever turns `false`
+ * inside `generatePrompt()`.
+ *
+ * The Generate button's text alternative lives in its `title`; the Copy
+ * button's lives in `aria-label` instead of `title`; `title` there is already
+ * owned by `flashCopyFeedback`'s transient "Copied!"/"Copy failed" tooltip
+ * (cleared back to `""` on its own timer), and writing this badge's text into
+ * the same attribute would either stomp that transient tooltip while it's
+ * showing, or -- once its timer fires -- get stomped right back to `""`
+ * itself, silently going text-less while the dot stayed lit. */
+function updatePromptActionBadges() {
+  const needsRegenerate = state.promptDirty;
+  const needsCopy = !state.promptDirty && !state.promptCopied;
+
+  el.promptGenerate.classList.toggle("needs-regenerate", needsRegenerate);
+  el.promptGenerate.title = needsRegenerate ? t("composer.needsRegenerateTitle") : "";
+
+  el.promptCopy.classList.toggle("needs-copy", needsCopy);
+  if (needsCopy) {
+    el.promptCopy.setAttribute("aria-label", `${t("composer.copy")} — ${t("composer.needsCopyTitle")}`);
+  } else {
+    el.promptCopy.removeAttribute("aria-label");
+  }
 }
 
 /** Sets the composer toggle's `aria-label` from its current expanded/collapsed
@@ -2922,6 +3013,12 @@ async function generatePrompt() {
   el.promptResult.value = text;
   state.lastGeneratedPrompt = text;
   state.promptGenerated = true;
+  // A freshly generated prompt is never stale and never yet copied (issue
+  // #43): clears the "needs regenerating" badge and lights the "needs
+  // copying" one.
+  state.promptDirty = false;
+  state.promptCopied = false;
+  updatePromptActionBadges();
 }
 
 // ---- Language switching (issue #22) ----
@@ -2984,6 +3081,10 @@ function renderAll() {
   repopulatePromptSelects();
   updatePromptFilenameVisibility();
   updateComposerToggleAria();
+  // Re-translates whichever badge (if any) is currently lit (issue #43);
+  // `regeneratePromptIfUnedited` below will call this again on its own if it
+  // ends up regenerating, which is a harmless redundant call, not a bug.
+  updatePromptActionBadges();
   renderTree();
   renderRootBasename();
   renderRecentList();
