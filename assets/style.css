@@ -1001,6 +1001,18 @@ body.resizing {
   gap: 0.5rem;
 }
 
+/* `#prompt-generate`/`#prompt-copy` both need `position: relative` so the
+   ".needs-regenerate"/".needs-copy" dot below (an absolutely positioned
+   `::after`) anchors to the button itself rather than the nearest ancestor
+   that already had positioning. Scoped to these two IDs rather than added to
+   `.prompt-generate-button`/`.copy-button` generally, since other buttons
+   sharing those classes (e.g. per-file copy buttons) never get the badge
+   classes toggled onto them. */
+#prompt-generate,
+#prompt-copy {
+  position: relative;
+}
+
 .prompt-generate-button {
   background: var(--accent);
   border: 1px solid var(--accent);
@@ -1014,6 +1026,26 @@ body.resizing {
 
 .prompt-generate-button:hover {
   filter: brightness(1.1);
+}
+
+/* "Needs regenerating" / "needs copying" badges (issue #43): a small
+   notification dot in the button's top-right corner, meant to read as a
+   status hint rather than an error -- hence `--warning` (amber), not
+   `--danger`. Never the only signal of the state: `updatePromptActionBadges`
+   in app.js also sets a `title` (Generate) or `aria-label` (Copy) alongside
+   this class, so the hint survives for anyone who can't see, or can't easily
+   notice, a 6px dot. */
+#prompt-generate.needs-regenerate::after,
+#prompt-copy.needs-copy::after {
+  content: "";
+  position: absolute;
+  top: -0.3rem;
+  right: -0.3rem;
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: var(--warning);
+  border: 1px solid var(--bg-panel);
 }
 
 /* ---- Content toolbar (global copy actions) ---- */

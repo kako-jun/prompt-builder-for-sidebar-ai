@@ -216,6 +216,8 @@ const MESSAGES = {
     "composer.extra": "Additional instructions (optional)",
     "composer.generate": "Generate prompt",
     "composer.copy": "Copy prompt",
+    "composer.needsRegenerateTitle": "Settings have changed since the last generate — regenerate to include them.",
+    "composer.needsCopyTitle": "Not copied yet.",
     "composer.result": "Generated prompt (editable)",
     "composer.resultPlaceholder": "Choose options above and click “Generate prompt”.",
     "content.emptyHint": "Select files in the explorer to see their contents here.",
@@ -388,6 +390,8 @@ const MESSAGES = {
     "composer.extra": "追加の指示（任意）",
     "composer.generate": "プロンプトを生成",
     "composer.copy": "プロンプトをコピー",
+    "composer.needsRegenerateTitle": "前回の生成後に設定が変わりました。再生成してください。",
+    "composer.needsCopyTitle": "まだコピーしていません。",
     "composer.result": "生成されたプロンプト（編集可）",
     "composer.resultPlaceholder": "上のオプションを選んで「プロンプトを生成」を押してください。",
     "content.emptyHint": "エクスプローラーでファイルを選ぶと、ここに内容が表示されます。",
@@ -508,6 +512,16 @@ const state = {
   // clobbered).
   lastGeneratedPrompt: "",
   promptGenerated: false,
+  // "Needs regenerating" / "needs copying" badge state (issue #43). `promptDirty`
+  // starts `true` because "never generated yet" is itself a stale state worth
+  // flagging; `promptCopied` starts `false` because there is nothing to have
+  // copied yet. Both are driven exclusively through `markPromptDirty()` (every
+  // composer-input change) and `generatePrompt()`/the Copy button's click
+  // handler (see `updatePromptActionBadges` for how these two flags map onto
+  // the actual button badges) -- never by hand-editing `#prompt-result`, which
+  // is a deliberately different concept (see `regeneratePromptIfUnedited`).
+  promptDirty: true,
+  promptCopied: false,
   // Last tree/root load-failure state, as `{ key, params }` (or null when the
   // load succeeded). Kept so a locale switch can re-render the failure message
   // in the new language instead of blanking it out (issue #22): `renderTree`
@@ -829,6 +843,7 @@ function handleCheckboxChange(node, isChecked) {
   }
   renderTree();
   syncOpenFilesWithChecked();
+  markPromptDirty();
 }
 
 // ---- Presets ----
@@ -854,6 +869,7 @@ function applyPreset(preset) {
 
   renderTree();
   syncOpenFilesWithChecked();
+  markPromptDirty();
 }
 
 export function extensionOf(path) {
@@ -1846,6 +1862,7 @@ function setLineSelection(path, anchor, endpointA, endpointB, writeHash = true) 
   const end = Math.max(endpointA, endpointB);
   state.lineSelections.set(path, { anchor, start, end });
   updateLineSelectionDom(path);
+  markPromptDirty();
 
   if (writeHash) {
     writeRefToHash(formatLinesRef(path, start, end));
@@ -2052,7 +2069,23 @@ function showCopyToast(ok, error) {
  * `innerHTML = ""`) that detaches `button` from the document before this
  * runs. Reflecting success/failure on a detached button would be silently
  * invisible, so that case falls back to the page-level `showCopyToast`
- * instead. */
+ * instead.
+ *
+ * For `el.promptCopy` specifically, this function's own re-enable timer must
+ * defer to `promptGenerationInFlight` (issue #43 re-review follow-up): a
+ * Copy click starts this `COPY_FEEDBACK_MS` timer independently of
+ * `beginPromptGenerationUiLock`/`endPromptGenerationUiLock`, so if a
+ * `generatePrompt()` call (Generate click, or a locale switch's
+ * `regeneratePromptIfUnedited()`) starts and is still in flight when this
+ * timer fires, unconditionally clearing `disabled` here would re-enable Copy
+ * while `el.promptResult` is still mid-rewrite -- the same stale-text-copy
+ * bug `promptGenerationInFlight` (commit 9a3b7c0) exists to prevent, just via
+ * this timer as a second, uncoordinated writer of `el.promptCopy.disabled`.
+ * `endPromptGenerationUiLock()` is what re-enables it once generation
+ * actually finishes, so this timer only needs to stay out of its way. Every
+ * other button `flashCopyFeedback` is used on (file panel Copy, directory
+ * copy, "Copy all checked") has no such lock and re-enables unconditionally,
+ * same as before. */
 function flashCopyFeedback(button, ok, error) {
   if (!button.isConnected) {
     showCopyToast(ok, error);
@@ -2072,7 +2105,12 @@ function flashCopyFeedback(button, ok, error) {
     button.textContent = originalLabel;
     button.classList.remove("copy-success", "copy-failure");
     button.title = "";
-    button.disabled = false;
+    // `el.promptCopy` only: leave `disabled` alone while a `generatePrompt()`
+    // call is still holding the shared lock -- `endPromptGenerationUiLock()`
+    // owns re-enabling it once that call finishes (see doc comment above).
+    if (button !== el.promptCopy || promptGenerationInFlight === 0) {
+      button.disabled = false;
+    }
     delete button.dataset.copyOriginalLabel;
   }, COPY_FEEDBACK_MS);
 }
@@ -2598,6 +2636,7 @@ function reopenFromRecent(path) {
   state.checked.add(path);
   renderTree();
   syncOpenFilesWithChecked();
+  markPromptDirty();
 }
 
 // ---- Explorer pane resizer ----
@@ -2693,25 +2732,50 @@ function wirePromptComposer() {
   el.promptOutput.addEventListener("change", updatePromptFilenameVisibility);
   updatePromptFilenameVisibility();
 
+  // "Needs regenerating" badge triggers (issue #43): every composer input
+  // that `generatePrompt()` reads from. `state.checked`/`state.lineSelections`
+  // are covered separately, via `markPromptDirty()` calls inside their own
+  // aggregation points (`handleCheckboxChange`, `applyPreset`,
+  // `setLineSelection`, `reopenFromRecent`) rather than here.
+  for (const select of [el.promptGoal, el.promptTarget, el.promptOutput, el.promptContextMode]) {
+    select.addEventListener("change", markPromptDirty);
+  }
+  for (const field of [el.promptFilename, el.promptExtra]) {
+    field.addEventListener("input", markPromptDirty);
+  }
+  updatePromptActionBadges();
+
   // Disabling both buttons for the duration of `generatePrompt()` (an
   // `await`-ing async function) isn't just UX polish: a disabled button
   // can't dispatch a "click" event at all, so this is what actually rules
   // out a second "Generate" click racing the first one's still-pending fetch
   // and overwriting the result with a stale response (and rules out "Copy"
   // grabbing a known-stale textarea value mid-regeneration).
+  //
+  // Locking/unlocking goes through `beginPromptGenerationUiLock`/
+  // `endPromptGenerationUiLock` rather than setting `.disabled` directly --
+  // see that pair's doc comment for why (issue #43 re-review follow-up).
   el.promptGenerate.addEventListener("click", async () => {
-    el.promptGenerate.disabled = true;
-    el.promptCopy.disabled = true;
+    beginPromptGenerationUiLock();
     try {
       await generatePrompt();
     } finally {
-      el.promptGenerate.disabled = false;
-      el.promptCopy.disabled = false;
+      endPromptGenerationUiLock();
     }
   });
 
-  el.promptCopy.addEventListener("click", () => {
-    copyToClipboardWithFeedback(el.promptResult.value, el.promptCopy);
+  el.promptCopy.addEventListener("click", async () => {
+    const result = await copyToClipboardWithFeedback(el.promptResult.value, el.promptCopy);
+    // Only a *successful* copy clears the "needs copying" badge (issue #43) --
+    // on failure it's left exactly as `copyToClipboardWithFeedback`'s own
+    // transient "Copy failed" feedback already reports (`flashCopyFeedback`
+    // owns `el.promptCopy`'s `title` for that; leaving `state.promptCopied`
+    // untouched here means `updatePromptActionBadges` doesn't need to run at
+    // all, so there's nothing to race against it).
+    if (result.ok === true) {
+      state.promptCopied = true;
+      updatePromptActionBadges();
+    }
   });
 
   el.promptComposerToggle.addEventListener("click", () => {
@@ -2721,6 +2785,133 @@ function wirePromptComposer() {
     el.promptComposerToggle.setAttribute("aria-expanded", String(collapsed));
     updateComposerToggleAria();
   });
+}
+
+/** Monotonic counter that lets a `generatePrompt()` call recognize it has
+ * been superseded before it writes anything (issue #43 QA follow-up, F1/F2):
+ * both `markPromptDirty()` and `generatePrompt()` itself bump this on every
+ * call, and `generatePrompt()` captures its own value up front and checks it
+ * again right before writing its result. If either a composer input changed
+ * (F1: the four `<select>`s and the filename/extra-instructions fields stay
+ * enabled during `generatePrompt()`'s `await`ed content-gathering fetches, so
+ * a user can edit them mid-flight) or a second `generatePrompt()` call started
+ * (F2: `regeneratePromptIfUnedited()`, fired from a locale switch, can still
+ * start a second call while an earlier one -- e.g. from a Generate click --
+ * is still in flight, since it only checks whether the composer's output is
+ * unedited, not whether a `generatePrompt()` call is already running) since a
+ * given call captured its sequence number, that call's result
+ * is stale and must not overwrite `el.promptResult`/`state` -- see the guard
+ * near the end of `generatePrompt()`. */
+let promptGenerationSeq = 0;
+
+/** Counts `generatePrompt()` calls currently holding the Generate/Copy
+ * buttons' UI lock (issue #43 re-review follow-up). The Generate click
+ * handler and `regeneratePromptIfUnedited()` each disable-await-finally
+ * around their own `generatePrompt()` call, and when their two calls
+ * overlap -- e.g. a Generate click's fetch is still pending when a locale
+ * switch fires `regeneratePromptIfUnedited()` -- `promptGenerationSeq` above
+ * only protects `el.promptResult`/`state` from being overwritten by the
+ * stale one; it does nothing to stop that stale call's own `finally` from
+ * running first and re-enabling both buttons while the newer call is still
+ * in flight. That window let a user Copy the pre-switch (stale-locale) text.
+ * A plain boolean lock has the same problem in a different shape: whichever
+ * call's `finally` runs first sets it back to `false` regardless of whether
+ * the other call is still running. A depth counter fixes this by only
+ * unlocking once every call that locked has also unlocked -- use
+ * `beginPromptGenerationUiLock`/`endPromptGenerationUiLock` below instead of
+ * writing `el.promptGenerate.disabled`/`el.promptCopy.disabled` directly.
+ *
+ * `flashCopyFeedback`'s own re-enable timer also reads this counter (issue
+ * #43 re-review follow-up #2), so its independent `COPY_FEEDBACK_MS` timeout
+ * can't re-enable `el.promptCopy` out from under a still-in-flight
+ * `generatePrompt()` call either -- see that function's doc comment. */
+let promptGenerationInFlight = 0;
+
+/** Pairs with `endPromptGenerationUiLock()` below; see
+ * `promptGenerationInFlight`'s doc comment for why this exists instead of
+ * each caller setting `.disabled` itself. */
+function beginPromptGenerationUiLock() {
+  promptGenerationInFlight++;
+  el.promptGenerate.disabled = true;
+  el.promptCopy.disabled = true;
+}
+
+/** Pairs with `beginPromptGenerationUiLock()` above. Only re-enables the
+ * buttons once every in-flight lock has been released, so an earlier call's
+ * `finally` can never re-enable the buttons out from under a still-pending
+ * later call (issue #43 re-review follow-up; see `promptGenerationInFlight`'s
+ * doc comment). */
+function endPromptGenerationUiLock() {
+  promptGenerationInFlight = Math.max(0, promptGenerationInFlight - 1);
+  if (promptGenerationInFlight === 0) {
+    el.promptGenerate.disabled = false;
+    el.promptCopy.disabled = false;
+  }
+}
+
+/** Marks the composer's last-generated output as stale relative to its
+ * current inputs (issue #43): the Generate button's "needs regenerating"
+ * badge should be lit, and since there's now nothing freshly generated left
+ * to copy, the Copy button's "needs copying" badge should go dark along with
+ * it. Called from every place that changes a composer input -- the four
+ * `<select>`s and the filename/extra-instructions fields directly (wired in
+ * `wirePromptComposer`), plus `state.checked`/`state.lineSelections`'s own
+ * aggregation points (`handleCheckboxChange`, `applyPreset`,
+ * `setLineSelection`, `reopenFromRecent`) -- but deliberately NOT from
+ * editing `#prompt-result` itself: a hand-edit of the generated text is not
+ * an input changing, it's the entire point of leaving the result editable
+ * (see `regeneratePromptIfUnedited`'s doc comment for the separate "was it
+ * hand-edited" concept this must not be confused with). */
+function markPromptDirty() {
+  // Invalidates any in-flight `generatePrompt()` call (issue #43 QA follow-up,
+  // F1): see `promptGenerationSeq`'s doc comment above.
+  promptGenerationSeq++;
+  state.promptDirty = true;
+  state.promptCopied = false;
+  updatePromptActionBadges();
+}
+
+/** Pure computation of whether the Generate/Copy buttons should show their
+ * "needs regenerating"/"needs copying" badges (issue #43), given only
+ * `state.promptDirty`/`state.promptCopied`. "Needs copying" is true only
+ * once a prompt exists, is not stale, and hasn't been copied yet --
+ * `!promptDirty` already implies a prompt has been generated, since
+ * `promptDirty` only ever turns `false` inside `generatePrompt()`. Kept
+ * side-effect-free so it's testable in Node without a DOM (same pattern as
+ * `computeSecurityNoticeDomState`, issue #35/#36); `updatePromptActionBadges`
+ * below is the thin DOM-writing wrapper around it. */
+export function computeBadgeState(promptDirty, promptCopied) {
+  return {
+    needsRegenerate: promptDirty,
+    needsCopy: !promptDirty && !promptCopied,
+  };
+}
+
+/** Reflects `state.promptDirty`/`state.promptCopied` onto the Generate/Copy
+ * buttons as small notification-dot badges (issue #43; the dot itself is a
+ * CSS `::after` driven by the `needs-regenerate`/`needs-copy` classes toggled
+ * here -- see style.css) plus a text alternative, so neither badge depends on
+ * color alone.
+ *
+ * The Generate button's text alternative lives in its `title`; the Copy
+ * button's lives in `aria-label` instead of `title`; `title` there is already
+ * owned by `flashCopyFeedback`'s transient "Copied!"/"Copy failed" tooltip
+ * (cleared back to `""` on its own timer), and writing this badge's text into
+ * the same attribute would either stomp that transient tooltip while it's
+ * showing, or -- once its timer fires -- get stomped right back to `""`
+ * itself, silently going text-less while the dot stayed lit. */
+function updatePromptActionBadges() {
+  const { needsRegenerate, needsCopy } = computeBadgeState(state.promptDirty, state.promptCopied);
+
+  el.promptGenerate.classList.toggle("needs-regenerate", needsRegenerate);
+  el.promptGenerate.title = needsRegenerate ? t("composer.needsRegenerateTitle") : "";
+
+  el.promptCopy.classList.toggle("needs-copy", needsCopy);
+  if (needsCopy) {
+    el.promptCopy.setAttribute("aria-label", `${t("composer.copy")} — ${t("composer.needsCopyTitle")}`);
+  } else {
+    el.promptCopy.removeAttribute("aria-label");
+  }
 }
 
 /** Sets the composer toggle's `aria-label` from its current expanded/collapsed
@@ -2862,8 +3053,16 @@ async function gatherDiffEntries() {
 /** Gathers the composer's current form values plus whatever `state` data
  * `buildPromptText` needs for them, resolves any content the chosen context
  * mode (or, for target "diff", the diff itself) requires embedding, and
- * writes the generated prompt into the result textarea. */
+ * writes the generated prompt into the result textarea.
+ *
+ * Captures `promptGenerationSeq` up front and re-checks it right before
+ * writing anything (issue #43 QA follow-up, F1/F2): if a composer input
+ * changed or another `generatePrompt()` call started while this call's
+ * `await`s (below) were pending, this call is stale and returns without
+ * touching `el.promptResult`/`state` at all -- see `promptGenerationSeq`'s
+ * doc comment for the full rationale. */
 async function generatePrompt() {
+  const seq = ++promptGenerationSeq;
   const goal = el.promptGoal.value;
   const target = el.promptTarget.value;
   const output = el.promptOutput.value;
@@ -2915,9 +3114,24 @@ async function generatePrompt() {
     },
     getLocale()
   );
+
+  // A newer `markPromptDirty()` (a composer input changed mid-flight) or a
+  // newer `generatePrompt()` call (e.g. a locale switch's
+  // `regeneratePromptIfUnedited()` firing before this call's fetch resolved)
+  // has superseded this call: its result is stale, so discard it silently
+  // rather than overwrite `el.promptResult`/`state` with output that no
+  // longer matches the current inputs (issue #43 QA follow-up, F1/F2).
+  if (seq !== promptGenerationSeq) return;
+
   el.promptResult.value = text;
   state.lastGeneratedPrompt = text;
   state.promptGenerated = true;
+  // A freshly generated prompt is never stale and never yet copied (issue
+  // #43): clears the "needs regenerating" badge and lights the "needs
+  // copying" one.
+  state.promptDirty = false;
+  state.promptCopied = false;
+  updatePromptActionBadges();
 }
 
 // ---- Language switching (issue #22) ----
@@ -2960,12 +3174,31 @@ function syncLocaleControl() {
 
 /** If a prompt was previously generated and hasn't been hand-edited since,
  * regenerates it in the current locale; otherwise leaves the textarea alone so
- * manual edits (or an intentionally blank result) survive the language switch. */
-function regeneratePromptIfUnedited() {
+ * manual edits (or an intentionally blank result) survive the language switch.
+ *
+ * Locks the Generate/Copy buttons for the duration via
+ * `beginPromptGenerationUiLock`/`endPromptGenerationUiLock`, same as the
+ * Generate button's own click handler in `wirePromptComposer` (and for the
+ * same reason): without this, a locale switch's regeneration is an
+ * `await`-ing async call that leaves Copy clickable the whole time, so a user
+ * could copy the pre-switch (stale-locale) text while the new one is still in
+ * flight (issue #43 self-review follow-up). Going through the shared lock
+ * pair rather than setting `.disabled` directly matters when this call
+ * overlaps with the Generate click handler's own call -- see
+ * `promptGenerationInFlight`'s doc comment for the race that caused (issue
+ * #43 re-review follow-up). `renderAll` still calls this fire-and-forget --
+ * it doesn't await the returned promise -- since nothing about the locale
+ * switch itself depends on the regeneration finishing; `generatePrompt()`
+ * writes the textarea (and this function releases its share of the lock)
+ * whenever it resolves. */
+async function regeneratePromptIfUnedited() {
   if (state.promptGenerated && el.promptResult.value === state.lastGeneratedPrompt) {
-    // Fire-and-forget: generatePrompt is async (it may fetch embed content),
-    // and it writes the textarea itself when it resolves.
-    generatePrompt();
+    beginPromptGenerationUiLock();
+    try {
+      await generatePrompt();
+    } finally {
+      endPromptGenerationUiLock();
+    }
   }
 }
 
@@ -2980,6 +3213,10 @@ function renderAll() {
   repopulatePromptSelects();
   updatePromptFilenameVisibility();
   updateComposerToggleAria();
+  // Re-translates whichever badge (if any) is currently lit (issue #43);
+  // `regeneratePromptIfUnedited` below will call this again on its own if it
+  // ends up regenerating, which is a harmless redundant call, not a bug.
+  updatePromptActionBadges();
   renderTree();
   renderRootBasename();
   renderRecentList();

@@ -53,6 +53,7 @@ import {
   loadSecurityNoticeDismissed,
   saveSecurityNoticeDismissed,
   computeSecurityNoticeDomState,
+  computeBadgeState,
 } from "./app.js";
 
 // ---- extensionOf ----
@@ -2841,5 +2842,57 @@ describe("app.js source — no leftover 'copy.copy' / 'toolbar.copyAllChecked' c
 
   test("no quoted 'toolbar.copyAllChecked' literal remains anywhere in app.js (would indicate an un-migrated call site)", () => {
     assert.doesNotMatch(appJsSource, /["']toolbar\.copyAllChecked["']/);
+  });
+});
+
+// ---- computeBadgeState (issue #43 QA follow-up) ----
+
+describe("computeBadgeState", () => {
+  test("(dirty=true, copied=false): needs regenerating, does not need copying -- initial state / right after an input change", () => {
+    assert.deepEqual(computeBadgeState(true, false), {
+      needsRegenerate: true,
+      needsCopy: false,
+    });
+  });
+
+  test("(dirty=true, copied=true): needs regenerating, does not need copying -- reachable because the Copy button click handler has no `promptDirty` guard, so clicking Copy while dirty sets `promptCopied` true without clearing `promptDirty`; that must not resurrect the Copy badge", () => {
+    assert.deepEqual(computeBadgeState(true, true), {
+      needsRegenerate: true,
+      needsCopy: false,
+    });
+  });
+
+  test("(dirty=false, copied=false): does not need regenerating, needs copying -- right after a successful generate", () => {
+    assert.deepEqual(computeBadgeState(false, false), {
+      needsRegenerate: false,
+      needsCopy: true,
+    });
+  });
+
+  test("(dirty=false, copied=true): does not need regenerating, does not need copying -- after a successful generate followed by a successful copy", () => {
+    assert.deepEqual(computeBadgeState(false, true), {
+      needsRegenerate: false,
+      needsCopy: false,
+    });
+  });
+});
+
+// ---- i18n: badge title/aria-label keys (issue #43) ----
+
+describe("i18n composer badge keys (issue #43)", () => {
+  const NEW_MESSAGE_KEYS = ["composer.needsRegenerateTitle", "composer.needsCopyTitle"];
+
+  test("every new key resolves in both en and ja (no blank, no en fallback for ja)", () => {
+    for (const key of NEW_MESSAGE_KEYS) {
+      const en = tr("en", key);
+      const ja = tr("ja", key);
+      // A missing key would fall back to the key string itself.
+      assert.notEqual(en, key, `en missing ${key}`);
+      assert.notEqual(ja, key, `ja missing ${key}`);
+      assert.notEqual(en, "");
+      assert.notEqual(ja, "");
+      // A ja key that merely fell back to en would compare equal.
+      assert.notEqual(ja, en, `ja should differ from en for ${key}`);
+    }
   });
 });
