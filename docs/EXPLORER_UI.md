@@ -282,6 +282,13 @@ color-only: "Generate prompt" carries its hint in a `title` tooltip, and
 "Copy prompt" carries its hint in `aria-label` (not `title`, which briefly
 belongs to the transient "Copied!"/"Copy failed" feedback instead).
 
+"Excerpts"/"full file" context mode and target "diff" fetch their embedded
+content asynchronously, and a locale switch can also trigger a regenerate; if
+a composer input changes, or another generate starts, while one of these is
+still in flight, the stale generation finishes without writing anything --
+the result textarea and both badges are left exactly as they were, so a
+newer change is never silently overwritten by an older, now-outdated result.
+
 ## Selection size statistics
 
 The content toolbar shows a single live line of statistics for the currently

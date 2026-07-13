@@ -2768,6 +2768,21 @@ function wirePromptComposer() {
   });
 }
 
+/** Monotonic counter that lets a `generatePrompt()` call recognize it has
+ * been superseded before it writes anything (issue #43 QA follow-up, F1/F2):
+ * both `markPromptDirty()` and `generatePrompt()` itself bump this on every
+ * call, and `generatePrompt()` captures its own value up front and checks it
+ * again right before writing its result. If either a composer input changed
+ * (F1: the four `<select>`s and the filename/extra-instructions fields stay
+ * enabled during `generatePrompt()`'s `await`ed content-gathering fetches, so
+ * a user can edit them mid-flight) or a second `generatePrompt()` call started
+ * (F2: `regeneratePromptIfUnedited()`, fired from a locale switch, doesn't
+ * check the Generate/Copy buttons' `disabled` state the way the click handler
+ * does) since a given call captured its sequence number, that call's result
+ * is stale and must not overwrite `el.promptResult`/`state` -- see the guard
+ * near the end of `generatePrompt()`. */
+let promptGenerationSeq = 0;
+
 /** Marks the composer's last-generated output as stale relative to its
  * current inputs (issue #43): the Generate button's "needs regenerating"
  * badge should be lit, and since there's now nothing freshly generated left
@@ -2782,19 +2797,35 @@ function wirePromptComposer() {
  * (see `regeneratePromptIfUnedited`'s doc comment for the separate "was it
  * hand-edited" concept this must not be confused with). */
 function markPromptDirty() {
+  // Invalidates any in-flight `generatePrompt()` call (issue #43 QA follow-up,
+  // F1): see `promptGenerationSeq`'s doc comment above.
+  promptGenerationSeq++;
   state.promptDirty = true;
   state.promptCopied = false;
   updatePromptActionBadges();
+}
+
+/** Pure computation of whether the Generate/Copy buttons should show their
+ * "needs regenerating"/"needs copying" badges (issue #43), given only
+ * `state.promptDirty`/`state.promptCopied`. "Needs copying" is true only
+ * once a prompt exists, is not stale, and hasn't been copied yet --
+ * `!promptDirty` already implies a prompt has been generated, since
+ * `promptDirty` only ever turns `false` inside `generatePrompt()`. Kept
+ * side-effect-free so it's testable in Node without a DOM (same pattern as
+ * `computeSecurityNoticeDomState`, issue #35/#36); `updatePromptActionBadges`
+ * below is the thin DOM-writing wrapper around it. */
+export function computeBadgeState(promptDirty, promptCopied) {
+  return {
+    needsRegenerate: promptDirty,
+    needsCopy: !promptDirty && !promptCopied,
+  };
 }
 
 /** Reflects `state.promptDirty`/`state.promptCopied` onto the Generate/Copy
  * buttons as small notification-dot badges (issue #43; the dot itself is a
  * CSS `::after` driven by the `needs-regenerate`/`needs-copy` classes toggled
  * here -- see style.css) plus a text alternative, so neither badge depends on
- * color alone. "Needs copying" is true only once a prompt exists, is not
- * stale, and hasn't been copied yet -- `!state.promptDirty` already implies a
- * prompt has been generated, since `promptDirty` only ever turns `false`
- * inside `generatePrompt()`.
+ * color alone.
  *
  * The Generate button's text alternative lives in its `title`; the Copy
  * button's lives in `aria-label` instead of `title`; `title` there is already
@@ -2804,8 +2835,7 @@ function markPromptDirty() {
  * showing, or -- once its timer fires -- get stomped right back to `""`
  * itself, silently going text-less while the dot stayed lit. */
 function updatePromptActionBadges() {
-  const needsRegenerate = state.promptDirty;
-  const needsCopy = !state.promptDirty && !state.promptCopied;
+  const { needsRegenerate, needsCopy } = computeBadgeState(state.promptDirty, state.promptCopied);
 
   el.promptGenerate.classList.toggle("needs-regenerate", needsRegenerate);
   el.promptGenerate.title = needsRegenerate ? t("composer.needsRegenerateTitle") : "";
@@ -2957,8 +2987,16 @@ async function gatherDiffEntries() {
 /** Gathers the composer's current form values plus whatever `state` data
  * `buildPromptText` needs for them, resolves any content the chosen context
  * mode (or, for target "diff", the diff itself) requires embedding, and
- * writes the generated prompt into the result textarea. */
+ * writes the generated prompt into the result textarea.
+ *
+ * Captures `promptGenerationSeq` up front and re-checks it right before
+ * writing anything (issue #43 QA follow-up, F1/F2): if a composer input
+ * changed or another `generatePrompt()` call started while this call's
+ * `await`s (below) were pending, this call is stale and returns without
+ * touching `el.promptResult`/`state` at all -- see `promptGenerationSeq`'s
+ * doc comment for the full rationale. */
 async function generatePrompt() {
+  const seq = ++promptGenerationSeq;
   const goal = el.promptGoal.value;
   const target = el.promptTarget.value;
   const output = el.promptOutput.value;
@@ -3010,6 +3048,15 @@ async function generatePrompt() {
     },
     getLocale()
   );
+
+  // A newer `markPromptDirty()` (a composer input changed mid-flight) or a
+  // newer `generatePrompt()` call (e.g. a locale switch's
+  // `regeneratePromptIfUnedited()` firing before this call's fetch resolved)
+  // has superseded this call: its result is stale, so discard it silently
+  // rather than overwrite `el.promptResult`/`state` with output that no
+  // longer matches the current inputs (issue #43 QA follow-up, F1/F2).
+  if (seq !== promptGenerationSeq) return;
+
   el.promptResult.value = text;
   state.lastGeneratedPrompt = text;
   state.promptGenerated = true;
