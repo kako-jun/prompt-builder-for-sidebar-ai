@@ -2789,7 +2789,7 @@ describe("computeBadgeState", () => {
     });
   });
 
-  test("(dirty=true, copied=true): needs regenerating, does not need copying -- a stale `copied` left over from before the input changed must not resurrect the Copy badge", () => {
+  test("(dirty=true, copied=true): needs regenerating, does not need copying -- reachable because the Copy button click handler has no `promptDirty` guard, so clicking Copy while dirty sets `promptCopied` true without clearing `promptDirty`; that must not resurrect the Copy badge", () => {
     assert.deepEqual(computeBadgeState(true, true), {
       needsRegenerate: true,
       needsCopy: false,

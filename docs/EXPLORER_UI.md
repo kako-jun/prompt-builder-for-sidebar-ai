@@ -268,7 +268,10 @@ prompt" lights up whenever any composer input changes after the last
 generate — either of the four selects, the filename field, the additional-
 instructions field, the checked-file selection (individually, via a preset,
 or via "reopen" from the Recently-opened list), or a line selection — and
-goes dark the moment "Generate prompt" is clicked. "Copy prompt" lights up
+goes dark once generation actually completes, not the instant "Generate
+prompt" is clicked: for target "diff" (any context mode but "page") or
+context mode "excerpts"/"full", that means once the in-flight embed-content
+fetch resolves, not before. "Copy prompt" lights up
 right after a successful generate (there's a fresh result that hasn't been
 copied yet) and goes dark once "Copy prompt" is clicked and the copy actually
 succeeds; a failed copy leaves it lit, since there's still nothing copied.

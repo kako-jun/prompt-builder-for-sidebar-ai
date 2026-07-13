@@ -2776,9 +2776,11 @@ function wirePromptComposer() {
  * (F1: the four `<select>`s and the filename/extra-instructions fields stay
  * enabled during `generatePrompt()`'s `await`ed content-gathering fetches, so
  * a user can edit them mid-flight) or a second `generatePrompt()` call started
- * (F2: `regeneratePromptIfUnedited()`, fired from a locale switch, doesn't
- * check the Generate/Copy buttons' `disabled` state the way the click handler
- * does) since a given call captured its sequence number, that call's result
+ * (F2: `regeneratePromptIfUnedited()`, fired from a locale switch, can still
+ * start a second call while an earlier one -- e.g. from a Generate click --
+ * is still in flight, since it only checks whether the composer's output is
+ * unedited, not whether a `generatePrompt()` call is already running) since a
+ * given call captured its sequence number, that call's result
  * is stale and must not overwrite `el.promptResult`/`state` -- see the guard
  * near the end of `generatePrompt()`. */
 let promptGenerationSeq = 0;
@@ -3108,12 +3110,28 @@ function syncLocaleControl() {
 
 /** If a prompt was previously generated and hasn't been hand-edited since,
  * regenerates it in the current locale; otherwise leaves the textarea alone so
- * manual edits (or an intentionally blank result) survive the language switch. */
-function regeneratePromptIfUnedited() {
+ * manual edits (or an intentionally blank result) survive the language switch.
+ *
+ * Disables the Generate/Copy buttons for the duration, same as the Generate
+ * button's own click handler in `wirePromptComposer` (and for the same
+ * reason): without this, a locale switch's regeneration is an `await`-ing
+ * async call that leaves Copy clickable the whole time, so a user could copy
+ * the pre-switch (stale-locale) text while the new one is still in flight
+ * (issue #43 self-review follow-up). `renderAll` still calls this
+ * fire-and-forget -- it doesn't await the returned promise -- since nothing
+ * about the locale switch itself depends on the regeneration finishing;
+ * `generatePrompt()` writes the textarea (and this function re-enables the
+ * buttons) whenever it resolves. */
+async function regeneratePromptIfUnedited() {
   if (state.promptGenerated && el.promptResult.value === state.lastGeneratedPrompt) {
-    // Fire-and-forget: generatePrompt is async (it may fetch embed content),
-    // and it writes the textarea itself when it resolves.
-    generatePrompt();
+    el.promptGenerate.disabled = true;
+    el.promptCopy.disabled = true;
+    try {
+      await generatePrompt();
+    } finally {
+      el.promptGenerate.disabled = false;
+      el.promptCopy.disabled = false;
+    }
   }
 }
 
