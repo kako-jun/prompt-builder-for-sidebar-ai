@@ -2805,7 +2805,7 @@ async function gatherFullFileEntries(paths) {
 /** Fetches `/api/diff` (issue #8) and always resolves to exactly one entry
  * for `buildPromptContextSection`'s target-"diff" case -- never an empty
  * array -- so that function never needs its own "nothing to embed yet"
- * fallback for this target the way "excerpts"/"full" do. `ref: "@diff"`
+ * fallback for this target the way "excerpts"/"full"/"attach" do. `ref: "@diff"`
  * keeps the entry shaped like every other gather* function's output (`{
  * ref, content }`) even though `buildPromptContextSection` doesn't currently
  * read it, so a future refactor that unifies the diff branch with the
