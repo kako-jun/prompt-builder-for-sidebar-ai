@@ -2753,9 +2753,27 @@ describe("index.html — context-mode select title attribute (issue #39)", () =>
   const html = readFileSync(fileURLToPath(new URL("./index.html", import.meta.url)), "utf8");
 
   test("default (English) title attribute on #prompt-context-mode matches MESSAGES.en['composer.contextModeHint'] exactly", () => {
-    const match = html.match(/<select\s+id="prompt-context-mode"[^>]*\btitle="([^"]*)"/);
+    const tagMatch = html.match(/<select\s+id="prompt-context-mode"[^>]*>/);
+    assert.ok(tagMatch, "expected to find the #prompt-context-mode <select> tag");
+    // Strip `data-i18n-title="..."` first so the `title="..."` match below can't
+    // be fooled by attribute order: a naive `\btitle="` regex matches both the
+    // `-title="` tail of `data-i18n-title` and the real `title` attribute, and
+    // greedy backtracking only happens to land on the right one while `title`
+    // sits after `data-i18n-title` in the markup. Removing the decoy first makes
+    // the extraction correct regardless of how the two attributes are ordered.
+    const withoutDataI18nTitle = tagMatch[0].replace(/\bdata-i18n-title="[^"]*"/, "");
+    const match = withoutDataI18nTitle.match(/\btitle="([^"]*)"/);
     assert.ok(match, "expected #prompt-context-mode to have a title attribute");
     const decoded = match[1].replace(/&quot;/g, '"');
     assert.equal(decoded, tr("en", "composer.contextModeHint"));
+  });
+
+  test("title extraction is resilient to attribute order (data-i18n-title before or after title)", () => {
+    const reordered =
+      '<select id="prompt-context-mode" title="real tip" data-i18n-title="composer.contextModeHint"></select>';
+    const withoutDataI18nTitle = reordered.replace(/\bdata-i18n-title="[^"]*"/, "");
+    const match = withoutDataI18nTitle.match(/\btitle="([^"]*)"/);
+    assert.ok(match, "expected to find the real title attribute regardless of order");
+    assert.equal(match[1], "real tip");
   });
 });

@@ -1355,9 +1355,10 @@ export function describePromptOutput(output, filename, locale = "en") {
  * already uses for "nothing selected/checked yet" below, not a reason to
  * override the choice itself.
  *
- * For "excerpts"/"full" (no separate "just an excerpt of the diff" concept
- * exists -- a diff is already a purpose-built excerpt of the changes, so
- * both modes behave identically here), `contextEntries` comes from
+ * For "excerpts"/"full"/"attach" (no separate "just an excerpt of the diff"
+ * concept exists -- a diff is already a purpose-built excerpt of the changes,
+ * and "attach this as a file" doesn't map onto an in-memory diff either, so
+ * all three modes behave identically here), `contextEntries` comes from
  * `gatherDiffEntries`, which always resolves to exactly one entry carrying
  * either real diff text (`isDiff: true`, wrapped in a fenced, `diff`-tagged
  * code block) or plain-language explanatory prose for "not a Git
