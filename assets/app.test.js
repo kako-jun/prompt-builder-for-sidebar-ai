@@ -1,5 +1,7 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import {
   extensionOf,
   isSourceFile,
@@ -2558,5 +2560,202 @@ describe("tr - security notice labels", () => {
   test("the removed issue #28-era 'security.reopenAria' key no longer exists in either locale (tr falls back to the raw key, proving no translation was found)", () => {
     assert.equal(tr("en", "security.reopenAria"), "security.reopenAria");
     assert.equal(tr("ja", "security.reopenAria"), "security.reopenAria");
+  });
+});
+
+// ---- Prompt composer: 'compare' goal (issue #39) ----
+
+describe("buildPromptText — 'compare' goal (issue #39)", () => {
+  test("English prompt for goal 'compare' includes the comparison instruction sentence", () => {
+    const text = buildPromptText({ goal: "compare", target: "page", output: "concise", contextMode: "page" });
+    assert.match(
+      text,
+      /Compare the sources below and produce a structured summary of their similarities and differences\./
+    );
+  });
+
+  test("Japanese prompt for goal 'compare' includes the localized comparison instruction, with no English vocabulary leaking in", () => {
+    const text = buildPromptText(
+      { goal: "compare", target: "page", output: "concise", contextMode: "page" },
+      "ja"
+    );
+    assert.match(text, /以下のソースを比較し、類似点と相違点を構造化してまとめてください。/);
+    assert.doesNotMatch(text, /Compare the sources/);
+    assert.doesNotMatch(text, /similarities and differences/);
+  });
+
+  test("inserting 'compare' between 'review' and 'extract-tests' left both neighbors' instructions untouched (copy-paste/index regression guard)", () => {
+    const review = buildPromptText({ goal: "review", target: "page", output: "concise", contextMode: "page" });
+    assert.match(review, /Review this code's design and\/or security, and list any concerns\./);
+
+    const extractTests = buildPromptText({
+      goal: "extract-tests",
+      target: "page",
+      output: "concise",
+      contextMode: "page",
+    });
+    assert.match(extractTests, /Extract or propose test cases that cover this code's behavior\./);
+  });
+});
+
+describe("PROMPT_GOALS / PROMPT_CONTEXT_MODES — option order (issue #39)", () => {
+  test("PROMPT_GOALS lists values in the fixed dropdown order, with 'compare' directly after 'review'", () => {
+    assert.deepEqual(PROMPT_GOALS.map((g) => g.value), [
+      "locate",
+      "explain",
+      "investigate-bug",
+      "review",
+      "compare",
+      "extract-tests",
+      "refactor",
+      "plan",
+    ]);
+  });
+
+  test("PROMPT_CONTEXT_MODES lists values in the fixed dropdown order, with 'attach' last", () => {
+    assert.deepEqual(PROMPT_CONTEXT_MODES.map((m) => m.value), ["page", "excerpts", "full", "attach"]);
+  });
+});
+
+// ---- Prompt composer: 'attach' context mode (issue #39) ----
+
+describe("buildPromptContextSection — 'attach' context mode (issue #39)", () => {
+  test("lists every entry's ref as a bullet under the attach instruction, under a '## Context' heading", () => {
+    const entries = [{ ref: "@file:a.js" }, { ref: "@file:b.js" }];
+    const section = buildPromptContextSection("attach", entries, "checked");
+    assert.match(section, /^## Context/);
+    assert.match(section, /Attach them directly using the sidebar AI's own file-attachment feature/);
+    assert.match(section, /- @file:a\.js/);
+    assert.match(section, /- @file:b\.js/);
+  });
+
+  test("never embeds file content, even when an entry happens to carry a 'content' field", () => {
+    // "attach" mode's whole point is to never paste content -- `generatePrompt`
+    // deliberately skips fetching it for this mode, but this guards the
+    // rendering itself in case a `content` field ever leaks through.
+    const entries = [{ ref: "@file:secret.env", content: "API_KEY=super-secret" }];
+    const section = buildPromptContextSection("attach", entries, "checked");
+    assert.doesNotMatch(section, /API_KEY/);
+    assert.doesNotMatch(section, /super-secret/);
+  });
+
+  test("falls back to 'context.attach.none' when contextEntries is an empty array", () => {
+    assert.equal(buildPromptContextSection("attach", [], "checked"), tr("en", "context.attach.none"));
+  });
+
+  test("falls back to 'context.attach.none' when contextEntries is undefined (same defensive pattern as 'excerpts'/'full')", () => {
+    assert.equal(buildPromptContextSection("attach", undefined, "checked"), tr("en", "context.attach.none"));
+  });
+
+  test("renders exactly one bullet for a single entry", () => {
+    const section = buildPromptContextSection("attach", [{ ref: "@file:a.js" }], "checked");
+    const bulletLines = section.split("\n").filter((line) => line.startsWith("- "));
+    assert.deepEqual(bulletLines, ["- @file:a.js"]);
+  });
+
+  test("renders one bullet per entry, in input order, for multiple entries", () => {
+    const entries = [{ ref: "@file:a.js" }, { ref: "@file:b.js" }, { ref: "@file:c.js" }];
+    const section = buildPromptContextSection("attach", entries, "checked");
+    const bulletLines = section.split("\n").filter((line) => line.startsWith("- "));
+    assert.deepEqual(bulletLines, ["- @file:a.js", "- @file:b.js", "- @file:c.js"]);
+  });
+});
+
+describe("buildPromptContextSection — target 'diff' ignores 'attach' the same way it ignores 'excerpts'/'full' (issue #39)", () => {
+  test("'attach' produces byte-identical output to 'excerpts'/'full' for a real diff entry", () => {
+    // Verified decision-table fact: `target === "diff"` returns before ever
+    // branching on `contextMode` (other than "page"), so "attach" can't add
+    // its file-list rendering here -- the diff is embedded exactly as it is
+    // for "excerpts"/"full".
+    const entries = [{ content: "diff --git a/x b/x\n+added", isDiff: true }];
+    const attachSection = buildPromptContextSection("attach", entries, "diff");
+    const excerptsSection = buildPromptContextSection("excerpts", entries, "diff");
+    const fullSection = buildPromptContextSection("full", entries, "diff");
+    assert.equal(attachSection, excerptsSection);
+    assert.equal(attachSection, fullSection);
+    // Sanity: it's the real diff-fence rendering, not some other coincidental match.
+    assert.match(attachSection, /```diff\n/);
+    assert.doesNotMatch(attachSection, /Attach them directly/);
+  });
+
+  test("target 'diff' with context mode 'page' is unaffected by the 'attach' addition (regression)", () => {
+    const section = buildPromptContextSection(
+      "page",
+      [{ content: "diff --git a/x b/x\n+added", isDiff: true }],
+      "diff"
+    );
+    assert.equal(section, tr("en", "context.diff.pageNote"));
+  });
+});
+
+describe("buildPromptContextSection — 'excerpts'/'full'/'page' outputs unchanged after adding 'attach' (issue #39 regression)", () => {
+  test("'excerpts' with entries still renders byte-identical output to before 'attach' was added", () => {
+    const section = buildPromptContextSection("excerpts", [{ ref: "@lines:a.js#L1-L2", content: "const a = 1;" }]);
+    assert.equal(section, "## Context\n\n### @lines:a.js#L1-L2\n\n```javascript\nconst a = 1;\n```\n");
+  });
+
+  test("'full' with entries still renders byte-identical output to before 'attach' was added", () => {
+    const section = buildPromptContextSection("full", [{ ref: "@file:a.js", content: "const a = 1;" }]);
+    assert.equal(section, "## Context\n\n### @file:a.js\n\n```javascript\nconst a = 1;\n```\n");
+  });
+
+  test("'page' still returns an empty string regardless of entries", () => {
+    assert.equal(buildPromptContextSection("page", [{ ref: "@file:a.js", content: "x" }]), "");
+  });
+});
+
+describe("buildPromptContextSection — 'context.attach.none' matches the tone of 'context.full.none' (issue #39)", () => {
+  test("English wording is a complete, non-empty parenthetical sentence, same shape as 'context.full.none'", () => {
+    assert.equal(
+      tr("en", "context.attach.none"),
+      '(No files are currently checked, so there is nothing to attach. Check some files first, or switch context mode to "Page context only".)'
+    );
+  });
+
+  test("Japanese wording is a complete, non-empty parenthetical sentence, same shape as 'context.full.none'", () => {
+    assert.equal(
+      tr("ja", "context.attach.none"),
+      "（現在チェックされているファイルがないため、添付するものがありません。まずファイルをチェックするか、コンテキストモードを「ページのコンテキストのみ」に切り替えてください。）"
+    );
+  });
+});
+
+// ---- i18n: new composer keys (issue #39: compare goal, attach context mode) ----
+
+describe("i18n new composer keys (issue #39)", () => {
+  const NEW_MESSAGE_KEYS = [
+    "goal.compare.label",
+    "goal.compare.instruction",
+    "contextMode.attach.label",
+    "context.attach.instruction",
+    "context.attach.none",
+    "composer.contextModeHint",
+  ];
+
+  test("every new key resolves in both en and ja (no blank, no en fallback for ja)", () => {
+    for (const key of NEW_MESSAGE_KEYS) {
+      const en = tr("en", key);
+      const ja = tr("ja", key);
+      // A missing key would fall back to the key string itself.
+      assert.notEqual(en, key, `en missing ${key}`);
+      assert.notEqual(ja, key, `ja missing ${key}`);
+      assert.notEqual(en, "");
+      assert.notEqual(ja, "");
+      // A ja key that merely fell back to en would compare equal.
+      assert.notEqual(ja, en, `ja should differ from en for ${key}`);
+    }
+  });
+});
+
+// ---- index.html: context-mode select title attribute (issue #39) ----
+
+describe("index.html — context-mode select title attribute (issue #39)", () => {
+  const html = readFileSync(fileURLToPath(new URL("./index.html", import.meta.url)), "utf8");
+
+  test("default (English) title attribute on #prompt-context-mode matches MESSAGES.en['composer.contextModeHint'] exactly", () => {
+    const match = html.match(/<select\s+id="prompt-context-mode"[^>]*\btitle="([^"]*)"/);
+    assert.ok(match, "expected #prompt-context-mode to have a title attribute");
+    const decoded = match[1].replace(/&quot;/g, '"');
+    assert.equal(decoded, tr("en", "composer.contextModeHint"));
   });
 });
