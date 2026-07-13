@@ -26,7 +26,7 @@ not a link or button -- this is a single-root-per-session tool, so there is
 nowhere to navigate "home" to (that becomes meaningful once issue #11 adds a
 root picker).
 
-## Security notice (dismiss / reopen)
+## Security notice (dismiss / collapse in place)
 
 `#security-notice` originally shipped (issue #9) with no dismiss control at
 all, on the theory that a security disclosure shouldn't be something a user
@@ -45,11 +45,17 @@ The current behavior:
   (`pbsa-security-notice-dismissed`), the same best-effort pattern as the
   locale/recent-files choices -- a private-browsing or storage-disabled
   context just won't remember the dismissal across reloads.
-- A small "🛡 Safety" control sits permanently in the brand row next to the
-  language toggle and re-shows the notice on demand at any time; reopening it
-  clears the stored dismissal, so the notice goes back to showing again on
-  the next load too (it doesn't stay silently "seen forever" once you've
-  chosen to look at it again).
+- Issue #28 first re-shown the dismissed notice via a separate "🛡 Safety"
+  button living in the brand row -- a different location from the ✕ that
+  closed it. Issue #36 replaced that with an in-place collapse: dismissing
+  the notice doesn't hide it entirely, it collapses the same top-of-page slot
+  into a thin "🛡 Safety notice" strip (`#security-notice-collapsed`).
+  Clicking that strip expands the full notice again, clearing the stored
+  dismissal (so it goes back to showing in full on the next load too, rather
+  than staying silently "seen forever" once you've chosen to look at it
+  again). Exactly one of the full notice / the collapsed strip is visible at
+  any time, in that same position -- there's no separate reopen control
+  anywhere else in the UI.
 - The wording itself was rewritten to name the two actual risk points
   directly: files opened here are untrusted input (their content can include
   text written to steer an AI), and whatever gets copied out is handed to

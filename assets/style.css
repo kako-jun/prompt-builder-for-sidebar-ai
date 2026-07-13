@@ -90,6 +90,47 @@ button {
   color: var(--text);
 }
 
+/* Issue #36: the collapsed state of the notice above -- shown instead of
+   `.security-notice` (never both at once, see setSecurityNoticeVisible in
+   app.js) in the exact same top-of-page slot, so dismissing/reopening is a
+   single in-place toggle rather than moving the control to a different part
+   of the UI (the brand row's old "🛡 Safety" button). Deliberately slimmer
+   and quieter than the full notice -- `--text-dim` at rest, only shifting to
+   the same `--warning` color on hover/focus -- since its job is to stay
+   available without competing for attention once the user has already read
+   the full disclosure once. */
+.security-notice-collapsed {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  width: 100%;
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  padding: 0.25rem 0.9rem;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 0.75rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.security-notice-collapsed[hidden] {
+  display: none;
+}
+
+.security-notice-collapsed:hover,
+.security-notice-collapsed:focus-visible {
+  color: var(--warning);
+  border-color: var(--warning);
+}
+
+.security-notice-collapsed:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
 .app {
   display: flex;
   flex: 1;
@@ -137,37 +178,11 @@ button {
   border-radius: 5px;
 }
 
-/* Issue #28: groups the always-visible "🛡 Safety" re-open control with the
-   language toggle at the brand row's right edge, so both compact controls
-   sit together rather than the safety button floating on its own. */
-.brand-row-controls {
-  display: flex;
-  align-items: center;
-  gap: 0.6rem;
-}
-
-.security-reopen-button {
-  display: flex;
-  align-items: center;
-  gap: 0.3rem;
-  background: transparent;
-  border: 1px solid var(--border);
-  color: var(--text-dim);
-  border-radius: 4px;
-  padding: 0.2rem 0.45rem;
-  font: inherit;
-  font-size: 0.75rem;
-  cursor: pointer;
-  white-space: nowrap;
-}
-
-.security-reopen-button:hover {
-  color: var(--warning);
-  border-color: var(--warning);
-}
-
 /* Language toggle (issue #22): a compact EN / 日本語 switcher sharing the brand
-   row at the top of the explorer pane (issue #15), pushed to its right edge. */
+   row at the top of the explorer pane (issue #15), pushed to its right edge.
+   Issue #36 removed the "🛡 Safety" re-open button that used to sit next to
+   it here (see `.security-notice-collapsed` instead), so this is once again
+   the brand row's only right-hand control. */
 .locale-switcher {
   display: flex;
   align-items: center;

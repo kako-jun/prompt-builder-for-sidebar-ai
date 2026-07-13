@@ -75,9 +75,11 @@ content; an external, uncontrolled AI on the receiving end of a paste). The
 notice now shows once (persisted via `localStorage`, guarded so a
 private-browsing/non-browser context degrades to "always show" rather than
 throwing), is dismissible with a close button, and can be re-opened on demand
-via a small "🛡 Safety" control that stays permanently visible in the brand
-row -- the disclosure itself was never removed, only the forced-every-load
-display.
+-- the disclosure itself was never removed, only the forced-every-load
+display. Issue #36 changed *where* it reopens from: dismissing no longer
+hides the notice outright, it collapses the same top-of-page slot into a thin
+"🛡 Safety notice" strip that expands the full notice again on click, rather
+than the earlier design's separate "🛡 Safety" button in the brand row.
 | `ROOT` given as a GitHub URL (issue #14) clones from an unexpected location, or the clone itself is unbounded. | The clone URL is always reconstructed as `https://github.com/{owner}/{repo}.git` from the parsed owner/repo, never the raw input string, so the CLI argument can't inject a different protocol or host at the URL-parsing level. Once on disk, the clone is validated identically to any other local root -- no new logic needed there. **Not mitigated**: `git clone --depth 1` bounds history but not working-tree size, and the clone has no timeout; see "Explicitly out of scope" below. |
 
 ## Explicitly out of scope

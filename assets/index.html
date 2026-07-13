@@ -26,8 +26,17 @@
       "this app is dangerous" rather than naming the actual risk. It's now
       shown once, dismissible, and its choice is remembered in localStorage;
       the disclosure itself isn't removed, just no longer force-shown every
-      load -- the "🛡" control in the brand row below re-opens it on demand.
-      See THREAT_MODEL.md for the full rationale.
+      load.
+
+      Issue #36 changed *where* it reopens from: #28 put a "🛡 Safety" button
+      in the brand row, a separate location from the ✕ that closes it. Now
+      dismissing collapses this same top-of-page slot into a thin
+      `#security-notice-collapsed` strip (below) instead -- the open/close
+      toggle lives in one place. `hidden` is toggled on exactly one of this
+      element and the strip at a time (see setSecurityNoticeVisible in
+      app.js), so together they always render exactly one of "full notice" /
+      "collapsed strip" in the same position. See THREAT_MODEL.md for the
+      full rationale.
     -->
     <div id="security-notice" class="security-notice" role="note" hidden>
       <span data-i18n="security.notice">
@@ -43,13 +52,29 @@
         aria-label="Dismiss this notice"
       >✕</button>
     </div>
+    <button
+      type="button"
+      id="security-notice-collapsed"
+      class="security-notice-collapsed"
+      aria-expanded="false"
+      aria-controls="security-notice"
+      hidden
+    >
+      <span aria-hidden="true">🛡</span>
+      <span data-i18n="security.collapsedLabel">Safety notice</span>
+    </button>
     <div id="app" class="app">
       <aside id="explorer-pane" class="explorer-pane">
         <!--
-          Brand row (issue #15): the app icon carries the branding since the
-          full name "prompt-builder-for-sidebar-ai" is too long to spell out
-          in the pane; the name lives in the logo's alt/title (hover to see
-          it) instead. The language toggle sits at the right of the same row.
+          Brand row (issue #15, revised by issue #36): the app icon carries
+          the branding since the full name "prompt-builder-for-sidebar-ai" is
+          too long to spell out in the pane; the name lives in the logo's
+          alt/title (hover to see it) instead. The language toggle sits at
+          the right of the same row. Issue #36 removed the "🛡 Safety"
+          re-open button that used to sit here (see
+          `#security-notice-collapsed` near the top of the page instead) --
+          it no longer competes with the language toggle for room in this
+          row.
         -->
         <div class="brand-row">
           <img
@@ -60,26 +85,14 @@
             alt="prompt-builder-for-sidebar-ai"
             title="prompt-builder-for-sidebar-ai"
           />
-          <div class="brand-row-controls">
-            <button
-              type="button"
-              id="security-reopen"
-              class="security-reopen-button"
-              data-i18n-aria="security.reopenAria"
-              aria-label="Show the safety notice"
+          <div class="locale-switcher">
+            <label for="locale-select" class="locale-switcher-label" data-i18n="locale.label"
+              >Language</label
             >
-              <span aria-hidden="true">🛡</span>
-              <span data-i18n="security.reopenLabel">Safety</span>
-            </button>
-            <div class="locale-switcher">
-              <label for="locale-select" class="locale-switcher-label" data-i18n="locale.label"
-                >Language</label
-              >
-              <select id="locale-select" class="locale-select">
-                <option value="en">English</option>
-                <option value="ja">日本語</option>
-              </select>
-            </div>
+            <select id="locale-select" class="locale-select">
+              <option value="en">English</option>
+              <option value="ja">日本語</option>
+            </select>
           </div>
         </div>
 
