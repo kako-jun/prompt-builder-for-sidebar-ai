@@ -224,7 +224,6 @@ const MESSAGES = {
     "file.loading": "Loading…",
     "file.loadFailed": "(failed to load: {err})",
     "file.loadFailedHttp": "(failed to load: HTTP {status})",
-    "copy.copy": "Copy",
     "copy.copied": "Copied!",
     "copy.failed": "Copy failed",
     "copy.moreOptions": "More copy options",
@@ -233,7 +232,6 @@ const MESSAGES = {
     "menu.copyReferenceAndCode": "Copy reference + code",
     "menu.copyAllCheckedAs": "Copy all checked as {format}",
     "menu.copyFileTree": "Copy file tree",
-    "toolbar.copyAllChecked": "Copy all checked",
     "toast.copied": "Copied to clipboard.",
     "toast.copyFailed": "Copy failed: {error}",
     "toast.unknownError": "unknown error",
@@ -398,7 +396,6 @@ const MESSAGES = {
     "file.loading": "読み込み中…",
     "file.loadFailed": "（読み込みに失敗しました: {err}）",
     "file.loadFailedHttp": "（読み込みに失敗しました: HTTP {status}）",
-    "copy.copy": "コピー",
     "copy.copied": "コピーしました!",
     "copy.failed": "コピー失敗",
     "copy.moreOptions": "その他のコピー方法",
@@ -407,7 +404,6 @@ const MESSAGES = {
     "menu.copyReferenceAndCode": "参照 + コード をコピー",
     "menu.copyAllCheckedAs": "チェック全件を {format} でコピー",
     "menu.copyFileTree": "ファイルツリーをコピー",
-    "toolbar.copyAllChecked": "チェック全件をコピー",
     "toast.copied": "クリップボードにコピーしました。",
     "toast.copyFailed": "コピー失敗: {error}",
     "toast.unknownError": "不明なエラー",
@@ -1725,7 +1721,7 @@ function buildFilePanel(path) {
   actions.className = "file-panel-actions";
   actions.appendChild(
     buildCopyActionGroup(
-      t("copy.copy"),
+      t("menu.copyFileAs", { format: formatLabel("markdown") }),
       (button) => copyFileAs(path, "markdown", button),
       () => filePanelCopyMenuItems(path)
     )
@@ -2376,7 +2372,7 @@ function renderContentToolbar() {
 
   el.contentToolbarActions.innerHTML = "";
   const group = buildCopyActionGroup(
-    t("toolbar.copyAllChecked"),
+    t("menu.copyAllCheckedAs", { format: formatLabel("markdown") }),
     (button) => copyAllChecked("markdown", button),
     globalCopyMenuItems
   );

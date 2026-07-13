@@ -175,7 +175,10 @@ in the tree (hover to reveal), and the content pane's global toolbar -- shows
 the same control: an always-visible primary button plus a "⋯" button that
 opens a menu of the other output formats and actions (a reference-only copy,
 and, once a line range is selected, a reference-plus-code copy). The primary
-button always copies as Markdown; the "⋯" menu covers the rest.
+button always copies as Markdown, and its label says so ("Copy file as
+Markdown" / "Copy all checked as Markdown", reusing the same "Copy … as
+{format}" phrasing as the "⋯" menu's other format entries) rather than
+leaving the format implicit; the "⋯" menu covers the rest.
 
 There are four output formats:
 
