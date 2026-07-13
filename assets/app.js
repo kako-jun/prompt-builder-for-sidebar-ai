@@ -2454,22 +2454,37 @@ export function saveSecurityNoticeDismissed(dismissed) {
   }
 }
 
+/** Pure computation of what the two security-notice elements' DOM state
+ * should be for a given visibility: never both `#security-notice` and its
+ * collapsed `#security-notice-collapsed` strip shown at once, and
+ * `aria-expanded` on the collapsed strip tracking whether the notice it
+ * controls is currently expanded (issue #36: dismissing/reopening is now a
+ * single in-place toggle in this one page slot, not a separate button
+ * elsewhere in the UI). Kept side-effect-free so it's testable in Node
+ * without a DOM (issue #35/#36, should-1); `setSecurityNoticeVisible` below
+ * is the thin DOM-writing wrapper around it. */
+export function computeSecurityNoticeDomState(visible) {
+  return {
+    noticeHidden: !visible,
+    collapsedHidden: visible,
+    collapsedAriaExpanded: visible ? "true" : "false",
+  };
+}
+
 /** Shows the full `#security-notice` or its collapsed `#security-notice-
  * collapsed` strip -- never both -- via the `hidden` attribute (not a class
  * or inline style) so `role="note"` keeps working normally on the full
  * notice when it's visible and each element is removed from the
  * accessibility tree -- not just visually masked -- when it isn't the one
- * showing. `aria-expanded` on the collapsed strip tracks whether the notice
- * it controls is currently expanded (issue #36: dismissing/reopening is now
- * a single in-place toggle in this one page slot, not a separate button
- * elsewhere in the UI). */
+ * showing. */
 function setSecurityNoticeVisible(visible) {
+  const domState = computeSecurityNoticeDomState(visible);
   if (el.securityNotice) {
-    el.securityNotice.hidden = !visible;
+    el.securityNotice.hidden = domState.noticeHidden;
   }
   if (el.securityNoticeCollapsed) {
-    el.securityNoticeCollapsed.hidden = visible;
-    el.securityNoticeCollapsed.setAttribute("aria-expanded", String(visible));
+    el.securityNoticeCollapsed.hidden = domState.collapsedHidden;
+    el.securityNoticeCollapsed.setAttribute("aria-expanded", domState.collapsedAriaExpanded);
   }
 }
 
@@ -2484,6 +2499,11 @@ function wireSecurityNotice() {
     el.securityNoticeCollapsed.addEventListener("click", () => {
       saveSecurityNoticeDismissed(false);
       setSecurityNoticeVisible(true);
+      // The clicked strip itself becomes `hidden` by the call above, which
+      // would otherwise drop focus to `<body>` (issue #35/#36, should-2:
+      // confirmed on-device). Move it to the dismiss ("x") button so
+      // keyboard/AT users land somewhere actionable in the reopened notice.
+      el.securityNoticeDismiss?.focus();
     });
   }
 }

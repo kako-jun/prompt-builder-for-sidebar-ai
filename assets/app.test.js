@@ -50,6 +50,7 @@ import {
   detectInitialLocale,
   loadSecurityNoticeDismissed,
   saveSecurityNoticeDismissed,
+  computeSecurityNoticeDomState,
 } from "./app.js";
 
 // ---- extensionOf ----
@@ -2461,6 +2462,29 @@ describe("saveSecurityNoticeDismissed", () => {
     };
     assert.doesNotThrow(() => withStorage(throwingWriteStorage, () => saveSecurityNoticeDismissed(true)));
     assert.doesNotThrow(() => withStorage(throwingWriteStorage, () => saveSecurityNoticeDismissed(false)));
+  });
+});
+
+// ---- computeSecurityNoticeDomState (issue #35/#36, should-1) ----
+//
+// Pure computation extracted from `setSecurityNoticeVisible` so the
+// notice/collapsed-strip DOM-state logic is testable without a DOM.
+
+describe("computeSecurityNoticeDomState", () => {
+  test("visible=true: shows the full notice, hides the collapsed strip, and marks it expanded", () => {
+    assert.deepEqual(computeSecurityNoticeDomState(true), {
+      noticeHidden: false,
+      collapsedHidden: true,
+      collapsedAriaExpanded: "true",
+    });
+  });
+
+  test("visible=false: hides the full notice, shows the collapsed strip, and marks it collapsed", () => {
+    assert.deepEqual(computeSecurityNoticeDomState(false), {
+      noticeHidden: true,
+      collapsedHidden: false,
+      collapsedAriaExpanded: "false",
+    });
   });
 });
 
