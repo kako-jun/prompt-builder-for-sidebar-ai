@@ -66,13 +66,13 @@ const MESSAGES = {
     "goal.investigate-bug.instruction":
       "Investigate the described bug (or its impact), including its likely root cause.",
     "goal.review.instruction": "Review this code's design and/or security, and list any concerns.",
+    "goal.compare.instruction":
+      "Compare the sources below and produce a structured summary of their similarities and differences.",
     "goal.extract-tests.instruction":
       "Extract or propose test cases that cover this code's behavior.",
     "goal.refactor.instruction":
       "Suggest refactoring opportunities here and explain why each would help.",
     "goal.plan.instruction": "Produce an implementation plan for the request below.",
-    "goal.compare.instruction":
-      "Compare the sources below and produce a structured summary of their similarities and differences.",
 
     // Generated prompt -- output instructions
     "output.concise.instruction": "Respond with a concise answer.",
@@ -138,10 +138,10 @@ const MESSAGES = {
     "goal.explain.label": "Explain code",
     "goal.investigate-bug.label": "Investigate a bug or its impact",
     "goal.review.label": "Review design or security",
+    "goal.compare.label": "Compare / synthesize across sources",
     "goal.extract-tests.label": "Extract test cases",
     "goal.refactor.label": "Suggest refactoring",
     "goal.plan.label": "Plan implementation",
-    "goal.compare.label": "Compare / synthesize across sources",
 
     // Composer -- target option labels
     "target.page.label": "Whole page",
@@ -246,13 +246,13 @@ const MESSAGES = {
     "goal.investigate-bug.instruction":
       "記載されたバグ（またはその影響）を、想定される根本原因も含めて調査してください。",
     "goal.review.instruction": "このコードの設計やセキュリティをレビューし、懸念点を挙げてください。",
+    "goal.compare.instruction":
+      "以下のソースを比較し、類似点と相違点を構造化してまとめてください。",
     "goal.extract-tests.instruction":
       "このコードの挙動をカバーするテストケースを抽出または提案してください。",
     "goal.refactor.instruction":
       "ここでのリファクタリングの余地を提案し、それぞれがなぜ有効かを説明してください。",
     "goal.plan.instruction": "以下の依頼に対する実装計画を作成してください。",
-    "goal.compare.instruction":
-      "以下のソースを比較し、類似点と相違点を構造化してまとめてください。",
 
     // Generated prompt -- output instructions
     "output.concise.instruction": "簡潔な回答で答えてください。",
@@ -313,10 +313,10 @@ const MESSAGES = {
     "goal.explain.label": "コードを説明",
     "goal.investigate-bug.label": "バグやその影響を調査",
     "goal.review.label": "設計やセキュリティをレビュー",
+    "goal.compare.label": "複数ソースを比較・統合",
     "goal.extract-tests.label": "テストケースを抽出",
     "goal.refactor.label": "リファクタリングを提案",
     "goal.plan.label": "実装計画を立てる",
-    "goal.compare.label": "複数ソースを比較・統合",
 
     // Composer -- target option labels
     "target.page.label": "ページ全体",
@@ -1262,10 +1262,10 @@ export const PROMPT_GOALS = [
   { value: "explain", labelKey: "goal.explain.label" },
   { value: "investigate-bug", labelKey: "goal.investigate-bug.label" },
   { value: "review", labelKey: "goal.review.label" },
+  { value: "compare", labelKey: "goal.compare.label" },
   { value: "extract-tests", labelKey: "goal.extract-tests.label" },
   { value: "refactor", labelKey: "goal.refactor.label" },
   { value: "plan", labelKey: "goal.plan.label" },
-  { value: "compare", labelKey: "goal.compare.label" },
 ];
 
 export const PROMPT_TARGETS = [

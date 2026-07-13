@@ -205,12 +205,11 @@ instructions, matching the goal/target/output/context-mode model from the
 project's design:
 
 - **Goal**: find relevant code, explain code, investigate a bug or its
-  impact, review design or security, extract test cases, suggest
-  refactoring, plan implementation, or compare/synthesize across sources
+  impact, review design or security, compare/synthesize across sources
   (issue #39 -- asks for a structured summary of the checked sources'
   similarities and differences, aimed at sidebar AIs that can compare
   multiple open tabs/files at once, e.g. Gemini in Chrome or Copilot in
-  Edge).
+  Edge), extract test cases, suggest refactoring, or plan implementation.
 - **Target**: the whole page, the checked files, the currently selected line
   range(s), or the Git diff. Choosing "Downloadable file" as the output also
   reveals a filename field, whose value is embedded in the prompt as an
