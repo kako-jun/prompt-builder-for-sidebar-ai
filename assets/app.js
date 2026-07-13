@@ -2433,7 +2433,7 @@ function createRecentReopenIcon() {
 // browsing, disabled, non-browser) degrades to "not dismissed" / "the choice
 // just doesn't stick across reloads" rather than throwing.
 
-function loadSecurityNoticeDismissed() {
+export function loadSecurityNoticeDismissed() {
   try {
     return localStorage.getItem(SECURITY_NOTICE_STORAGE_KEY) === "1";
   } catch (err) {
@@ -2441,7 +2441,7 @@ function loadSecurityNoticeDismissed() {
   }
 }
 
-function saveSecurityNoticeDismissed(dismissed) {
+export function saveSecurityNoticeDismissed(dismissed) {
   try {
     if (dismissed) {
       localStorage.setItem(SECURITY_NOTICE_STORAGE_KEY, "1");

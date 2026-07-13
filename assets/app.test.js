@@ -48,6 +48,8 @@ import {
   tr,
   substituteParams,
   detectInitialLocale,
+  loadSecurityNoticeDismissed,
+  saveSecurityNoticeDismissed,
 } from "./app.js";
 
 // ---- extensionOf ----
@@ -2364,5 +2366,122 @@ describe("detectInitialLocale", () => {
       detectInitialLocale
     );
     assert.equal(result, "en");
+  });
+});
+
+// ---- Security notice dismiss/reopen (issue #28/#36): loadSecurityNoticeDismissed / saveSecurityNoticeDismissed ----
+//
+// Same ambient-`localStorage`-swap approach as `withLocaleGlobals` above,
+// scoped to just `localStorage` since these two functions (unlike
+// `detectInitialLocale`) never touch `navigator`.
+
+function withStorage(localStorage, fn) {
+  const had = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+  if (localStorage === undefined) {
+    delete globalThis.localStorage;
+  } else {
+    Object.defineProperty(globalThis, "localStorage", {
+      value: localStorage,
+      configurable: true,
+      writable: true,
+    });
+  }
+  try {
+    return fn();
+  } finally {
+    if (had) Object.defineProperty(globalThis, "localStorage", had);
+    else delete globalThis.localStorage;
+  }
+}
+
+/** A localStorage stub returning `value` for the security-notice-dismissed
+ * key (and null otherwise), mirroring `storageReturning` above. */
+function securityStorageReturning(value) {
+  return { getItem: (key) => (key === "pbsa-security-notice-dismissed" ? value : null) };
+}
+
+describe("loadSecurityNoticeDismissed", () => {
+  test("returns true when the stored value is exactly '1'", () => {
+    const result = withStorage(securityStorageReturning("1"), loadSecurityNoticeDismissed);
+    assert.equal(result, true);
+  });
+
+  test("returns false when nothing is stored (getItem returns null)", () => {
+    const result = withStorage(securityStorageReturning(null), loadSecurityNoticeDismissed);
+    assert.equal(result, false);
+  });
+
+  test("returns false for an empty string", () => {
+    const result = withStorage(securityStorageReturning(""), loadSecurityNoticeDismissed);
+    assert.equal(result, false);
+  });
+
+  test("returns false for any stored value other than the literal '1' (equivalence class: 'true', '0')", () => {
+    assert.equal(withStorage(securityStorageReturning("true"), loadSecurityNoticeDismissed), false);
+    assert.equal(withStorage(securityStorageReturning("0"), loadSecurityNoticeDismissed), false);
+  });
+
+  test("falls back to false, without propagating the exception, when localStorage access throws", () => {
+    assert.doesNotThrow(() => withStorage(throwingStorage, loadSecurityNoticeDismissed));
+    assert.equal(withStorage(throwingStorage, loadSecurityNoticeDismissed), false);
+  });
+});
+
+describe("saveSecurityNoticeDismissed", () => {
+  test("dismissed=true calls localStorage.setItem with the storage key and '1'", () => {
+    const calls = { setItem: [], removeItem: [] };
+    const storage = {
+      setItem: (...args) => calls.setItem.push(args),
+      removeItem: (...args) => calls.removeItem.push(args),
+    };
+    withStorage(storage, () => saveSecurityNoticeDismissed(true));
+    assert.deepEqual(calls.setItem, [["pbsa-security-notice-dismissed", "1"]]);
+    assert.deepEqual(calls.removeItem, []);
+  });
+
+  test("dismissed=false calls localStorage.removeItem with the storage key", () => {
+    const calls = { setItem: [], removeItem: [] };
+    const storage = {
+      setItem: (...args) => calls.setItem.push(args),
+      removeItem: (...args) => calls.removeItem.push(args),
+    };
+    withStorage(storage, () => saveSecurityNoticeDismissed(false));
+    assert.deepEqual(calls.removeItem, [["pbsa-security-notice-dismissed"]]);
+    assert.deepEqual(calls.setItem, []);
+  });
+
+  test("swallows an exception from a disabled/throwing localStorage instead of propagating it", () => {
+    const throwingWriteStorage = {
+      setItem() {
+        throw new Error("SecurityError: storage is disabled");
+      },
+      removeItem() {
+        throw new Error("SecurityError: storage is disabled");
+      },
+    };
+    assert.doesNotThrow(() => withStorage(throwingWriteStorage, () => saveSecurityNoticeDismissed(true)));
+    assert.doesNotThrow(() => withStorage(throwingWriteStorage, () => saveSecurityNoticeDismissed(false)));
+  });
+});
+
+// ---- tr: security notice message-catalog keys (issue #35/#36 regression) ----
+
+describe("tr - security notice labels", () => {
+  test("English 'security.collapsedLabel' reads 'Safety notice'", () => {
+    assert.equal(tr("en", "security.collapsedLabel"), "Safety notice");
+  });
+
+  test("Japanese 'security.collapsedLabel' reads '安全性の通知'", () => {
+    assert.equal(tr("ja", "security.collapsedLabel"), "安全性の通知");
+  });
+
+  test("the removed issue #28-era 'security.reopenLabel' key no longer exists in either locale (tr falls back to the raw key, proving no translation was found)", () => {
+    assert.equal(tr("en", "security.reopenLabel"), "security.reopenLabel");
+    assert.equal(tr("ja", "security.reopenLabel"), "security.reopenLabel");
+  });
+
+  test("the removed issue #28-era 'security.reopenAria' key no longer exists in either locale (tr falls back to the raw key, proving no translation was found)", () => {
+    assert.equal(tr("en", "security.reopenAria"), "security.reopenAria");
+    assert.equal(tr("ja", "security.reopenAria"), "security.reopenAria");
   });
 });
