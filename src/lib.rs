@@ -379,6 +379,84 @@ mod tests {
     }
 
     #[test]
+    fn rendered_html_app_name_has_no_data_i18n_attribute() {
+        // issue #35: the app name is a proper noun/product name, identical in
+        // every locale, so unlike translatable static chrome it must never be
+        // wired into the data-i18n find-and-replace pipeline. Scan just the
+        // app-name span's own opening tag for a data-i18n attribute (rather
+        // than the whole page, which legitimately has many) so this doesn't
+        // pass or fail for the wrong reason.
+        let html = rendered_index_html();
+        let tag_start = html
+            .find(r#"<span class="app-name""#)
+            .expect("the app-name element should exist");
+        let tag_end = html[tag_start..]
+            .find('>')
+            .map(|i| tag_start + i)
+            .expect("the app-name opening tag should close");
+        let opening_tag = &html[tag_start..tag_end];
+        assert!(
+            !opening_tag.contains("data-i18n"),
+            "the app-name element should not carry a data-i18n attribute: {opening_tag}"
+        );
+    }
+
+    #[test]
+    fn rendered_html_app_name_title_matches_the_logos_alt_and_title() {
+        // issue #35: the app name became a permanently visible `.app-name`
+        // text node, but the `<img class="app-logo">`'s alt/title are kept
+        // too, as a fallback if the visible text is ever ellipsis-clipped
+        // down to nothing. All of them should still agree on the same name.
+        let html = rendered_index_html();
+        assert!(
+            html.contains(r#"alt="prompt-builder-for-sidebar-ai""#),
+            "the logo's alt text should still name the app"
+        );
+        assert!(
+            html.contains(
+                r#"<span class="app-name" title="prompt-builder-for-sidebar-ai">prompt-builder-for-sidebar-ai</span>"#
+            ),
+            "the app-name span should carry a matching title attribute and visible text"
+        );
+    }
+
+    #[test]
+    fn rendered_html_security_notice_collapsed_button_starts_hidden() {
+        // issue #36: dismissing the security notice now collapses it into
+        // this one strip (the single reopen affordance) instead of a
+        // separate button elsewhere, and it must start hidden -- the full
+        // notice is what's shown before any dismissal.
+        let html = rendered_index_html();
+        let id_pos = html
+            .find(r#"id="security-notice-collapsed""#)
+            .expect("the security-notice-collapsed button should exist");
+        let button_start = html[..id_pos]
+            .rfind("<button")
+            .expect("should find the enclosing <button tag");
+        let tag_end = html[button_start..]
+            .find('>')
+            .map(|i| button_start + i)
+            .expect("the button's opening tag should close");
+        let opening_tag = &html[button_start..tag_end];
+        assert!(
+            opening_tag.contains("hidden"),
+            "the collapsed security-notice button should start hidden: {opening_tag}"
+        );
+    }
+
+    #[test]
+    fn rendered_html_has_no_leftover_security_reopen_button() {
+        // issue #36 removed the old issue-#28-era "🛡 Safety" `#security-reopen`
+        // button in favor of the single `#security-notice-collapsed` strip;
+        // this pins down that removal so it can't silently come back.
+        let html = rendered_index_html();
+        assert!(
+            !html.contains(r#"id="security-reopen""#),
+            "the old #security-reopen button should have been fully removed"
+        );
+    }
+
+    #[test]
     fn resolve_root_accepts_an_existing_directory() {
         let resolved = resolve_root(Path::new(".")).expect("current directory should resolve");
         assert!(resolved.is_absolute());
