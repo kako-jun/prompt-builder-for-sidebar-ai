@@ -108,7 +108,12 @@ label text has one source of truth.
 
 The UI ships in two languages -- English (the source and fallback) and
 Japanese -- selectable from a small language toggle at the top of the
-explorer pane. A single active locale drives **both** the interface chrome
+explorer pane. The toggle's `<label>` ("Language"/"言語") is
+`.visually-hidden` rather than rendered text -- the select's own selected
+option already reads "English"/"日本語", so a second, always-identical label
+next to it was pure noise in the already-tight brand row; the label stays in
+the DOM so the select still has an accessible name for screen readers. A
+single active locale drives **both** the interface chrome
 (labels, buttons, preset names, the security notice, toasts, aria-labels) and
 the text of the prompt the composer generates, so switching languages
 localizes everything at once, not just the surrounding UI.

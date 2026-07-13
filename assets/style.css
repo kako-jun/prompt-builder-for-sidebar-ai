@@ -227,10 +227,6 @@ button {
   color: var(--text-dim);
 }
 
-.locale-switcher-label {
-  white-space: nowrap;
-}
-
 .locale-select {
   background: var(--bg-input);
   border: 1px solid var(--border);
