@@ -2073,7 +2073,23 @@ function showCopyToast(ok, error) {
  * `innerHTML = ""`) that detaches `button` from the document before this
  * runs. Reflecting success/failure on a detached button would be silently
  * invisible, so that case falls back to the page-level `showCopyToast`
- * instead. */
+ * instead.
+ *
+ * For `el.promptCopy` specifically, this function's own re-enable timer must
+ * defer to `promptGenerationInFlight` (issue #43 re-review follow-up): a
+ * Copy click starts this `COPY_FEEDBACK_MS` timer independently of
+ * `beginPromptGenerationUiLock`/`endPromptGenerationUiLock`, so if a
+ * `generatePrompt()` call (Generate click, or a locale switch's
+ * `regeneratePromptIfUnedited()`) starts and is still in flight when this
+ * timer fires, unconditionally clearing `disabled` here would re-enable Copy
+ * while `el.promptResult` is still mid-rewrite -- the same stale-text-copy
+ * bug `promptGenerationInFlight` (commit 9a3b7c0) exists to prevent, just via
+ * this timer as a second, uncoordinated writer of `el.promptCopy.disabled`.
+ * `endPromptGenerationUiLock()` is what re-enables it once generation
+ * actually finishes, so this timer only needs to stay out of its way. Every
+ * other button `flashCopyFeedback` is used on (file panel Copy, directory
+ * copy, "Copy all checked") has no such lock and re-enables unconditionally,
+ * same as before. */
 function flashCopyFeedback(button, ok, error) {
   if (!button.isConnected) {
     showCopyToast(ok, error);
@@ -2093,7 +2109,12 @@ function flashCopyFeedback(button, ok, error) {
     button.textContent = originalLabel;
     button.classList.remove("copy-success", "copy-failure");
     button.title = "";
-    button.disabled = false;
+    // `el.promptCopy` only: leave `disabled` alone while a `generatePrompt()`
+    // call is still holding the shared lock -- `endPromptGenerationUiLock()`
+    // owns re-enabling it once that call finishes (see doc comment above).
+    if (button !== el.promptCopy || promptGenerationInFlight === 0) {
+      button.disabled = false;
+    }
     delete button.dataset.copyOriginalLabel;
   }, COPY_FEEDBACK_MS);
 }
@@ -2802,7 +2823,12 @@ let promptGenerationSeq = 0;
  * the other call is still running. A depth counter fixes this by only
  * unlocking once every call that locked has also unlocked -- use
  * `beginPromptGenerationUiLock`/`endPromptGenerationUiLock` below instead of
- * writing `el.promptGenerate.disabled`/`el.promptCopy.disabled` directly. */
+ * writing `el.promptGenerate.disabled`/`el.promptCopy.disabled` directly.
+ *
+ * `flashCopyFeedback`'s own re-enable timer also reads this counter (issue
+ * #43 re-review follow-up #2), so its independent `COPY_FEEDBACK_MS` timeout
+ * can't re-enable `el.promptCopy` out from under a still-in-flight
+ * `generatePrompt()` call either -- see that function's doc comment. */
 let promptGenerationInFlight = 0;
 
 /** Pairs with `endPromptGenerationUiLock()` below; see
