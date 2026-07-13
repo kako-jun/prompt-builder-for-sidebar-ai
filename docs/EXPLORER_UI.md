@@ -205,8 +205,11 @@ instructions, matching the goal/target/output/context-mode model from the
 project's design:
 
 - **Goal**: find relevant code, explain code, investigate a bug or its
-  impact, review design or security, extract test cases, suggest
-  refactoring, or plan implementation.
+  impact, review design or security, compare/synthesize across sources
+  (issue #39 -- asks for a structured summary of the checked sources'
+  similarities and differences, aimed at sidebar AIs that can compare
+  multiple open tabs/files at once, e.g. Gemini in Chrome or Copilot in
+  Edge), extract test cases, suggest refactoring, or plan implementation.
 - **Target**: the whole page, the checked files, the currently selected line
   range(s), or the Git diff. Choosing "Downloadable file" as the output also
   reveals a filename field, whose value is embedded in the prompt as an
@@ -219,16 +222,26 @@ project's design:
   relying on the sidebar AI reading the live page itself; "Referenced
   excerpts" embeds the currently selected line range(s) from every file with
   an active selection; "Full selected files" embeds the full content of every
-  checked file.
+  checked file; "Attach as files, don't paste" (issue #39) embeds neither --
+  it lists the checked files by reference and instructs the sidebar AI's
+  *operator* to attach them directly via that AI's own native file-attachment
+  control (e.g. Gemini in Chrome's upload icon, Copilot in Edge's paperclip),
+  which skips fetching file content entirely (same optimization as "Page
+  context only"). The Context mode field's tooltip also notes, for the human
+  operator rather than the generated prompt text, that Gemini in Chrome can
+  reference other open tabs with `@` and that Copilot in Edge's use of page
+  context ("Context Clues") depends on how the prompt is phrased.
 
 Every combination of these four choices produces a complete, readable prompt
 -- including edge cases like "Referenced excerpts" with nothing currently
 selected, which embeds an explanatory placeholder instead of silently
 omitting the context section. Target "Git diff" embeds the current diff (via
 `GET /{token}/api/diff`, see [API.md](API.md)) under the "## Context" heading
-for "Referenced excerpts"/"Full selected files" (there's no separate "just an
-excerpt of the diff" mode -- a diff is already a purpose-built excerpt of the
-changes, so both behave the same for this target). "Page context only" is
+for "Referenced excerpts"/"Full selected files"/"Attach as files, don't
+paste" alike (there's no separate "just an excerpt of the diff" mode -- a
+diff is already a purpose-built excerpt of the changes, and "attach this as a
+file" doesn't map onto an in-memory diff either, so all three behave the same
+for this target). "Page context only" is
 honored, not overridden: unlike every other target, a diff is never actually
 rendered anywhere on the page for a sidebar AI to read on its own, so the
 usual "just read the live page" assumption doesn't hold for it -- rather than

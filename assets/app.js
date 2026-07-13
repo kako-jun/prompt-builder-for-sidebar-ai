@@ -66,6 +66,8 @@ const MESSAGES = {
     "goal.investigate-bug.instruction":
       "Investigate the described bug (or its impact), including its likely root cause.",
     "goal.review.instruction": "Review this code's design and/or security, and list any concerns.",
+    "goal.compare.instruction":
+      "Compare the sources below and produce a structured summary of their similarities and differences.",
     "goal.extract-tests.instruction":
       "Extract or propose test cases that cover this code's behavior.",
     "goal.refactor.instruction":
@@ -118,6 +120,10 @@ const MESSAGES = {
       '(No line range is currently selected, so no excerpt could be embedded here. Select one first, or switch context mode to "Page context only".)',
     "context.full.none":
       '(No files are currently checked, so no content could be embedded here. Check some files first, or switch context mode to "Page context only".)',
+    "context.attach.instruction":
+      "Don't paste these files' contents into this prompt. Attach them directly using the sidebar AI's own file-attachment feature, then refer to them by name below:",
+    "context.attach.none":
+      '(No files are currently checked, so there is nothing to attach. Check some files first, or switch context mode to "Page context only".)',
 
     // Selection size statistics
     "stats.none": "No files selected.",
@@ -132,6 +138,7 @@ const MESSAGES = {
     "goal.explain.label": "Explain code",
     "goal.investigate-bug.label": "Investigate a bug or its impact",
     "goal.review.label": "Review design or security",
+    "goal.compare.label": "Compare / synthesize across sources",
     "goal.extract-tests.label": "Extract test cases",
     "goal.refactor.label": "Suggest refactoring",
     "goal.plan.label": "Plan implementation",
@@ -155,6 +162,7 @@ const MESSAGES = {
     "contextMode.page.label": "Page context only",
     "contextMode.excerpts.label": "Referenced excerpts",
     "contextMode.full.label": "Full selected files",
+    "contextMode.attach.label": "Attach as files, don't paste",
 
     // Static chrome
     // Issue #28: rewritten to name the actual risk (untrusted file content;
@@ -203,6 +211,8 @@ const MESSAGES = {
     "composer.filename": "Filename",
     "composer.filenamePlaceholder": "e.g. test-spec.md",
     "composer.contextMode": "Context mode",
+    "composer.contextModeHint":
+      'Tip: Gemini in Chrome can reference other open tabs with "@"; Edge Copilot\'s use of page context (Context Clues) depends on how the prompt is phrased.',
     "composer.extra": "Additional instructions (optional)",
     "composer.generate": "Generate prompt",
     "composer.copy": "Copy prompt",
@@ -236,6 +246,8 @@ const MESSAGES = {
     "goal.investigate-bug.instruction":
       "記載されたバグ（またはその影響）を、想定される根本原因も含めて調査してください。",
     "goal.review.instruction": "このコードの設計やセキュリティをレビューし、懸念点を挙げてください。",
+    "goal.compare.instruction":
+      "以下のソースを比較し、類似点と相違点を構造化してまとめてください。",
     "goal.extract-tests.instruction":
       "このコードの挙動をカバーするテストケースを抽出または提案してください。",
     "goal.refactor.instruction":
@@ -283,6 +295,10 @@ const MESSAGES = {
       "（現在選択されている行範囲がないため、抜粋を埋め込めませんでした。まず選択するか、コンテキストモードを「ページのコンテキストのみ」に切り替えてください。）",
     "context.full.none":
       "（現在チェックされているファイルがないため、内容を埋め込めませんでした。まずファイルをチェックするか、コンテキストモードを「ページのコンテキストのみ」に切り替えてください。）",
+    "context.attach.instruction":
+      "これらのファイルの内容をこのプロンプトに貼り付けないでください。サイドバーAI自身のファイル添付機能を使って直接アタッチし、以下の名前で参照してください:",
+    "context.attach.none":
+      "（現在チェックされているファイルがないため、添付するものがありません。まずファイルをチェックするか、コンテキストモードを「ページのコンテキストのみ」に切り替えてください。）",
 
     // Selection size statistics
     "stats.none": "ファイルが選択されていません。",
@@ -297,6 +313,7 @@ const MESSAGES = {
     "goal.explain.label": "コードを説明",
     "goal.investigate-bug.label": "バグやその影響を調査",
     "goal.review.label": "設計やセキュリティをレビュー",
+    "goal.compare.label": "複数ソースを比較・統合",
     "goal.extract-tests.label": "テストケースを抽出",
     "goal.refactor.label": "リファクタリングを提案",
     "goal.plan.label": "実装計画を立てる",
@@ -320,6 +337,7 @@ const MESSAGES = {
     "contextMode.page.label": "ページのコンテキストのみ",
     "contextMode.excerpts.label": "参照した抜粋",
     "contextMode.full.label": "選択したファイル全体",
+    "contextMode.attach.label": "貼り付けずファイルとして添付",
 
     // Static chrome
     // Issue #28: 実際のリスクの出どころ（信頼できない入力としてのファイル、
@@ -367,6 +385,8 @@ const MESSAGES = {
     "composer.filename": "ファイル名",
     "composer.filenamePlaceholder": "例: test-spec.md",
     "composer.contextMode": "コンテキスト",
+    "composer.contextModeHint":
+      "ヒント: Chrome内蔵Geminiは「@」で他のタブを参照でき、Edge Copilotの文脈利用（Context Clues）はプロンプトの書き方に左右されます。",
     "composer.extra": "追加の指示（任意）",
     "composer.generate": "プロンプトを生成",
     "composer.copy": "プロンプトをコピー",
@@ -1242,6 +1262,7 @@ export const PROMPT_GOALS = [
   { value: "explain", labelKey: "goal.explain.label" },
   { value: "investigate-bug", labelKey: "goal.investigate-bug.label" },
   { value: "review", labelKey: "goal.review.label" },
+  { value: "compare", labelKey: "goal.compare.label" },
   { value: "extract-tests", labelKey: "goal.extract-tests.label" },
   { value: "refactor", labelKey: "goal.refactor.label" },
   { value: "plan", labelKey: "goal.plan.label" },
@@ -1268,6 +1289,7 @@ export const PROMPT_CONTEXT_MODES = [
   { value: "page", labelKey: "contextMode.page.label" },
   { value: "excerpts", labelKey: "contextMode.excerpts.label" },
   { value: "full", labelKey: "contextMode.full.label" },
+  { value: "attach", labelKey: "contextMode.attach.label" },
 ];
 
 /** Describes what `target` refers to, in a form that reads naturally inside
@@ -1333,9 +1355,10 @@ export function describePromptOutput(output, filename, locale = "en") {
  * already uses for "nothing selected/checked yet" below, not a reason to
  * override the choice itself.
  *
- * For "excerpts"/"full" (no separate "just an excerpt of the diff" concept
- * exists -- a diff is already a purpose-built excerpt of the changes, so
- * both modes behave identically here), `contextEntries` comes from
+ * For "excerpts"/"full"/"attach" (no separate "just an excerpt of the diff"
+ * concept exists -- a diff is already a purpose-built excerpt of the changes,
+ * and "attach this as a file" doesn't map onto an in-memory diff either, so
+ * all three modes behave identically here), `contextEntries` comes from
  * `gatherDiffEntries`, which always resolves to exactly one entry carrying
  * either real diff text (`isDiff: true`, wrapped in a fenced, `diff`-tagged
  * code block) or plain-language explanatory prose for "not a Git
@@ -1368,6 +1391,23 @@ export function buildPromptContextSection(contextMode, contextEntries, target, l
   }
 
   if (contextMode === "page") return "";
+
+  // "attach" (issue #39) deliberately never embeds file content -- the whole
+  // point is to point the sidebar AI at its own native file-attachment
+  // feature (Gemini in Chrome's upload icon, Copilot in Edge's paperclip)
+  // instead of pasting text, so `contextEntries` here only ever carries
+  // `{ ref }` (see `generatePrompt`, which skips fetching content for this
+  // mode the same way it already does for target "page"). Note target
+  // "diff" never reaches this branch at all -- it's handled above, where
+  // "attach" is treated like "excerpts"/"full" (embed the diff as usual),
+  // since "attach this as a file" doesn't map onto an in-memory diff.
+  if (contextMode === "attach") {
+    if (!contextEntries || contextEntries.length === 0) {
+      return tr(locale, "context.attach.none");
+    }
+    const fileList = contextEntries.map((entry) => `- ${entry.ref}`).join("\n");
+    return `${heading}\n\n${tr(locale, "context.attach.instruction")}\n\n${fileList}`;
+  }
 
   if (!contextEntries || contextEntries.length === 0) {
     return contextMode === "excerpts"
@@ -2765,7 +2805,7 @@ async function gatherFullFileEntries(paths) {
 /** Fetches `/api/diff` (issue #8) and always resolves to exactly one entry
  * for `buildPromptContextSection`'s target-"diff" case -- never an empty
  * array -- so that function never needs its own "nothing to embed yet"
- * fallback for this target the way "excerpts"/"full" do. `ref: "@diff"`
+ * fallback for this target the way "excerpts"/"full"/"attach" do. `ref: "@diff"`
  * keeps the entry shaped like every other gather* function's output (`{
  * ref, content }`) even though `buildPromptContextSection` doesn't currently
  * read it, so a future refactor that unifies the diff branch with the
@@ -2857,6 +2897,12 @@ async function generatePrompt() {
     contextEntries = await gatherExcerptEntries(lineSelectionEntries);
   } else if (contextMode === "full") {
     contextEntries = await gatherFullFileEntries(checkedPaths);
+  } else if (contextMode === "attach") {
+    // Never embeds content (see buildPromptContextSection's "attach" branch),
+    // so -- like target "page" above -- skip fetching file content that
+    // would only be discarded; build the lightweight `{ ref }` entries
+    // directly from the refs already computed above.
+    contextEntries = checkedRefs.map((ref) => ({ ref }));
   }
 
   const text = buildPromptText(
