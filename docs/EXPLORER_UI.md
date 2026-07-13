@@ -20,11 +20,14 @@ the browser never probes `/favicon.ico` (no more 404 for it). The
 `apple-touch-icon` link is best-effort: some iOS Safari versions ignore a
 `data:` URI there and fall back to a screenshot thumbnail when the page is
 added to the home screen, which does not apply to this tool's normal
-localhost-tab usage. The logo carries the branding in place of the long app
-name; the full name shows on hover via its `alt`/`title`. It is intentionally
-not a link or button -- this is a single-root-per-session tool, so there is
-nowhere to navigate "home" to (that becomes meaningful once issue #11 adds a
-root picker).
+localhost-tab usage. The logo sits next to the full app name, shown as
+always-visible text (issue #35; issue #15 had originally left the name
+hover-only, in the logo's `alt`/`title`, which stay as a tooltip/fallback).
+The name is a proper noun, so it's identical in every locale, and shrinks
+with an ellipsis rather than overflowing the row at the explorer-pane's
+220px minimum width. The logo itself is intentionally not a link or button
+-- this is a single-root-per-session tool, so there is nowhere to navigate
+"home" to (that becomes meaningful once issue #11 adds a root picker).
 
 ## Security notice (dismiss / collapse in place)
 

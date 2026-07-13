@@ -66,25 +66,33 @@
     <div id="app" class="app">
       <aside id="explorer-pane" class="explorer-pane">
         <!--
-          Brand row (issue #15, revised by issue #36): the app icon carries
-          the branding since the full name "prompt-builder-for-sidebar-ai" is
-          too long to spell out in the pane; the name lives in the logo's
-          alt/title (hover to see it) instead. The language toggle sits at
-          the right of the same row. Issue #36 removed the "🛡 Safety"
-          re-open button that used to sit here (see
-          `#security-notice-collapsed` near the top of the page instead) --
-          it no longer competes with the language toggle for room in this
-          row.
+          Brand row (issue #15, revised by issues #35/#36): issue #15 kept
+          the app name out of visible text, relying on the logo's alt/title
+          (hover only) since "prompt-builder-for-sidebar-ai" is long. Issue
+          #35 reverses that -- the name is now always-visible text next to
+          the icon (`.app-name`, grouped with the logo under
+          `.brand-identity`). It's a proper noun/product name, so it's
+          identical in every locale (no data-i18n) and shrinks with an
+          ellipsis at narrow explorer-pane widths rather than overflowing the
+          row; `alt`/`title` stay on the logo too, for the tooltip and as a
+          fallback if the visible text ever gets clipped down to nothing.
+          Issue #36 removed the "🛡 Safety" re-open button that used to sit
+          here (see `#security-notice-collapsed` near the top of the page
+          instead), which is what leaves room for the name without crowding
+          the language toggle at the row's right edge.
         -->
         <div class="brand-row">
-          <img
-            class="app-logo"
-            src="__ICON_DATA_URI__"
-            width="128"
-            height="128"
-            alt="prompt-builder-for-sidebar-ai"
-            title="prompt-builder-for-sidebar-ai"
-          />
+          <div class="brand-identity">
+            <img
+              class="app-logo"
+              src="__ICON_DATA_URI__"
+              width="128"
+              height="128"
+              alt="prompt-builder-for-sidebar-ai"
+              title="prompt-builder-for-sidebar-ai"
+            />
+            <span class="app-name" title="prompt-builder-for-sidebar-ai">prompt-builder-for-sidebar-ai</span>
+          </div>
           <div class="locale-switcher">
             <label for="locale-select" class="locale-switcher-label" data-i18n="locale.label"
               >Language</label
