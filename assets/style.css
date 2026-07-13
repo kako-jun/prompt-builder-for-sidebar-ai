@@ -1035,16 +1035,12 @@ body.resizing {
 .content-toolbar-info {
   display: flex;
   flex-direction: column;
-  gap: 0.1rem;
   min-width: 0;
 }
 
-.content-toolbar-count {
-  color: var(--text-dim);
-  font-size: 0.8rem;
-}
-
-/* Selection size statistics (issue #8): file/character/token counts. */
+/* Selection size statistics (issue #8): file/character/token counts.
+   Also stands in for the open-file count, folded into this same line
+   as of #38 (the two numbers were always structurally identical). */
 .content-toolbar-stats {
   color: var(--text-dim);
   font-size: 0.75rem;

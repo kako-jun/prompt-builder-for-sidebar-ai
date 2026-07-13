@@ -246,13 +246,16 @@ a freshly regenerated version.
 
 ## Selection size statistics
 
-The content toolbar shows, next to the open-file count, a live line of
-statistics for the currently checked selection: file count, total character
-count, and an estimated token count, updating as files are checked/unchecked
-and as each one's content finishes loading (a checked-but-still-loading file
-counts toward the file count immediately but not yet toward the character
-count, and is called out explicitly, e.g. "3 files selected (1 still
-loading)", rather than silently under-reporting the total). Past roughly
+The content toolbar shows a single live line of statistics for the currently
+checked selection: file count, total character count, and an estimated token
+count, updating as files are checked/unchecked and as each one's content
+finishes loading (a checked-but-still-loading file counts toward the file
+count immediately but not yet toward the character count, and is called out
+explicitly, e.g. "3 files selected (1 still loading)", rather than silently
+under-reporting the total). This one line also doubles as the open-file
+count: checking/unchecking a file always opens/closes its panel in lockstep,
+so a separate "N files open" line next to it would only ever repeat the same
+number (issue #38 merged the two into this single line). Past roughly
 200,000 characters the line also gets a "⚠ large selection" warning -- a
 soft, order-of-magnitude heuristic meant to catch an accidental
 "select-everything", not a hard limit enforced anywhere.
