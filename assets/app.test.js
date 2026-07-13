@@ -2777,3 +2777,69 @@ describe("index.html — context-mode select title attribute (issue #39)", () =>
     assert.equal(match[1], "real tip");
   });
 });
+
+// ---- tr: copy button labels explicitly name the format (issue #44) ----
+
+describe("tr - copy labels name the format (issue #44)", () => {
+  test("English 'menu.copyFileAs' with format 'Markdown' reads 'Copy file as Markdown'", () => {
+    assert.equal(
+      tr("en", "menu.copyFileAs", { format: formatLabel("markdown") }),
+      "Copy file as Markdown"
+    );
+  });
+
+  test("Japanese 'menu.copyFileAs' with format 'Markdown' reads 'ファイルを Markdown でコピー'", () => {
+    assert.equal(
+      tr("ja", "menu.copyFileAs", { format: formatLabel("markdown") }),
+      "ファイルを Markdown でコピー"
+    );
+  });
+
+  test("English 'menu.copyAllCheckedAs' with format 'Markdown' reads 'Copy all checked as Markdown'", () => {
+    assert.equal(
+      tr("en", "menu.copyAllCheckedAs", { format: formatLabel("markdown") }),
+      "Copy all checked as Markdown"
+    );
+  });
+
+  test("Japanese 'menu.copyAllCheckedAs' with format 'Markdown' reads 'チェック全件を Markdown でコピー'", () => {
+    assert.equal(
+      tr("ja", "menu.copyAllCheckedAs", { format: formatLabel("markdown") }),
+      "チェック全件を Markdown でコピー"
+    );
+  });
+
+  test("ja does not silently fall back to en for either format-labeled key", () => {
+    // A ja key that merely fell back to en would compare equal to its en counterpart.
+    assert.notEqual(
+      tr("en", "menu.copyFileAs", { format: formatLabel("markdown") }),
+      tr("ja", "menu.copyFileAs", { format: formatLabel("markdown") })
+    );
+    assert.notEqual(
+      tr("en", "menu.copyAllCheckedAs", { format: formatLabel("markdown") }),
+      tr("ja", "menu.copyAllCheckedAs", { format: formatLabel("markdown") })
+    );
+  });
+
+  test("the pre-#44 'copy.copy' key no longer exists in either locale (tr falls back to the raw key, proving no translation was found)", () => {
+    assert.equal(tr("en", "copy.copy"), "copy.copy");
+  });
+
+  test("the pre-#44 'toolbar.copyAllChecked' key no longer exists in either locale (tr falls back to the raw key, proving no translation was found)", () => {
+    assert.equal(tr("ja", "toolbar.copyAllChecked"), "toolbar.copyAllChecked");
+  });
+});
+
+// ---- app.js: removed issue #44 label keys leave no dangling call sites ----
+
+describe("app.js source — no leftover 'copy.copy' / 'toolbar.copyAllChecked' call sites (issue #44)", () => {
+  const appJsSource = readFileSync(fileURLToPath(new URL("./app.js", import.meta.url)), "utf8");
+
+  test("no quoted 'copy.copy' literal remains anywhere in app.js (would indicate an un-migrated call site)", () => {
+    assert.doesNotMatch(appJsSource, /["']copy\.copy["']/);
+  });
+
+  test("no quoted 'toolbar.copyAllChecked' literal remains anywhere in app.js (would indicate an un-migrated call site)", () => {
+    assert.doesNotMatch(appJsSource, /["']toolbar\.copyAllChecked["']/);
+  });
+});
