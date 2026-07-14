@@ -322,6 +322,14 @@ mod tests {
     use super::*;
 
     #[test]
+    // `APP_ICON` is `include_bytes!`, so a newer clippy can prove its length
+    // is a fixed, nonzero compile-time constant and flags this assertion as
+    // always-true noise (`const_is_empty`). Pre-existing lint drift, unrelated
+    // to issue #11 -- allowed rather than deleted, since the assertion still
+    // documents and locks in the real invariant (a corrupted/emptied
+    // `assets/icon.png` should fail this test, not just the PNG-magic-bytes
+    // check below).
+    #[allow(clippy::const_is_empty)]
     fn app_icon_is_a_nonempty_png() {
         assert!(
             !APP_ICON.is_empty(),
