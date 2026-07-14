@@ -162,8 +162,13 @@ impl AppState {
 }
 
 /// Whether a native folder-picker dialog can plausibly be shown right now.
-/// On Linux, `rfd`'s default (`xdg-portal`) backend needs a running desktop
-/// session; with neither `$DISPLAY` nor `$WAYLAND_DISPLAY` set (a bare SSH
+/// On Linux, `rfd`'s `xdg-portal` backend (the only Linux backend this
+/// crate enables -- see the `rfd` dependency in `Cargo.toml` -- since the
+/// sibling `wayland` feature only serves `set_parent`-style window
+/// parenting that this app never uses, and pulls in a system
+/// `wayland-client` pkg-config dependency this app doesn't need) needs a
+/// running desktop session; with neither `$DISPLAY` nor `$WAYLAND_DISPLAY`
+/// set (a bare SSH
 /// session, a headless CI runner, ...) there is no windowing system to show
 /// a dialog in at all. `rfd::FileDialog::pick_folder` returns `None` both
 /// when the user cancels and when no dialog could be shown, so this is
