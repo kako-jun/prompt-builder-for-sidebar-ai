@@ -2199,7 +2199,8 @@ function showCopyToast(ok, error) {
  * disabled for the duration so a second click can't pile up overlapping
  * reverts; on failure, `error` is surfaced
  * via the button's `title` tooltip, since the label itself only has room for
- * a short word.
+ * a short word -- except `el.promptCopy`'s own longer success hint above,
+ * which trades that button-width economy for the issue #48 nudge.
  *
  * A multi-file copy re-fetches every file before writing to the clipboard
  * (`fetchFileContents`), which can take long enough for the user to trigger a
