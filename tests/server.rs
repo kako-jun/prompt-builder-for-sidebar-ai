@@ -1,4 +1,4 @@
-use prompt_builder_for_sidebar_ai::{build_router, generate_session_token};
+use prompt_builder_for_sidebar_ai::{build_router, build_router_for_test, generate_session_token};
 use std::fs;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -105,6 +105,37 @@ async fn spawn_test_server_with_root(root: PathBuf) -> (SocketAddr, String, Join
 async fn spawn_test_server() -> (SocketAddr, String, JoinHandle<()>) {
     let root = std::env::current_dir().expect("should read the current directory");
     spawn_test_server_with_root(root).await
+}
+
+/// Spins up a fresh session server with `dialog_available`/`folder_picker`
+/// fakes standing in for the real native-dialog check and the real
+/// (blocking) `rfd` call `POST /{token}/api/open-folder` otherwise uses --
+/// see `build_router_for_test`'s doc comment for why a fake is necessary at
+/// all (there is no windowing system in a headless CI runner to show a real
+/// dialog in). Every other endpoint behaves exactly as with
+/// [`spawn_test_server_with_root`].
+async fn spawn_test_server_with_fakes(
+    root: PathBuf,
+    dialog_available: impl Fn() -> bool + Send + Sync + 'static,
+    folder_picker: impl Fn() -> Option<PathBuf> + Send + Sync + 'static,
+) -> (SocketAddr, String, JoinHandle<()>) {
+    let token = generate_session_token();
+    let router = build_router_for_test(&token, root, dialog_available, folder_picker);
+
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("should bind an available loopback port");
+    let addr = listener
+        .local_addr()
+        .expect("bound listener should have a local address");
+
+    let server = tokio::spawn(async move {
+        axum::serve(listener, router)
+            .await
+            .expect("server should run without error");
+    });
+
+    (addr, token, server)
 }
 
 /// A directory under the OS temp dir that is removed on drop, mirroring the
@@ -1257,6 +1288,347 @@ async fn api_diff_includes_modified_added_deleted_and_untracked_files() {
         diff.matches("diff --git a/").count(),
         4,
         "diff body: {diff}"
+    );
+
+    server.abort();
+}
+
+// ---- /api/open-folder (issue #11) ----
+
+#[tokio::test]
+async fn api_open_folder_returns_501_and_marks_unavailable_when_no_dialog_can_be_shown() {
+    let scratch = ScratchDir::new("open-folder-unavailable");
+    let (addr, token, server) = spawn_test_server_with_fakes(
+        scratch.path().to_path_buf(),
+        || false,
+        || unreachable!("folder_picker should never be called when the dialog is unavailable"),
+    )
+    .await;
+
+    let response = request(addr, "POST", &format!("/{token}/api/open-folder")).await;
+    assert!(
+        response.starts_with("HTTP/1.1 501"),
+        "expected 501 when no native dialog can be shown, got: {response}"
+    );
+    let body = body_of(&response);
+    let parsed: serde_json::Value = serde_json::from_str(body)
+        .unwrap_or_else(|err| panic!("body should be valid JSON: {err}, body: {body}"));
+    assert_eq!(parsed["available"], false);
+    assert_eq!(parsed["status"], "unavailable");
+
+    // The root must stay untouched.
+    let root_response = get(addr, &format!("/{token}/api/root")).await;
+    let root_parsed: serde_json::Value = serde_json::from_str(body_of(&root_response)).unwrap();
+    assert_eq!(
+        root_parsed["absolutePath"].as_str(),
+        Some(scratch.path().display().to_string().as_str())
+    );
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn api_open_folder_leaves_the_root_untouched_when_the_dialog_is_cancelled() {
+    let scratch = ScratchDir::new("open-folder-cancel");
+    fs::write(scratch.path().join("original.txt"), "original content").unwrap();
+    let (addr, token, server) =
+        spawn_test_server_with_fakes(scratch.path().to_path_buf(), || true, || None).await;
+
+    let response = request(addr, "POST", &format!("/{token}/api/open-folder")).await;
+    assert!(
+        response.starts_with("HTTP/1.1 200"),
+        "expected 200 for a cancelled dialog, got: {response}"
+    );
+    let body = body_of(&response);
+    let parsed: serde_json::Value = serde_json::from_str(body)
+        .unwrap_or_else(|err| panic!("body should be valid JSON: {err}, body: {body}"));
+    assert_eq!(parsed["available"], true);
+    assert_eq!(parsed["status"], "cancelled");
+
+    // Cancelling must not touch the root: both the root descriptor and the
+    // original file underneath it stay exactly as they were.
+    let root_response = get(addr, &format!("/{token}/api/root")).await;
+    let root_parsed: serde_json::Value = serde_json::from_str(body_of(&root_response)).unwrap();
+    assert_eq!(
+        root_parsed["absolutePath"].as_str(),
+        Some(scratch.path().display().to_string().as_str())
+    );
+
+    let file_response = get(addr, &format!("/{token}/api/file?path=original.txt")).await;
+    assert!(
+        file_response.starts_with("HTTP/1.1 200"),
+        "expected the original root's file to still be reachable after a cancelled dialog, got: {file_response}"
+    );
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn api_open_folder_replaces_the_root_on_a_valid_selection() {
+    let old_root = ScratchDir::new("open-folder-old-root");
+    fs::write(old_root.path().join("old-only.txt"), "old content").unwrap();
+    let new_root = ScratchDir::new("open-folder-new-root");
+    fs::write(new_root.path().join("new-only.txt"), "new content").unwrap();
+    let new_root_path = new_root.path().to_path_buf();
+
+    let (addr, token, server) = spawn_test_server_with_fakes(
+        old_root.path().to_path_buf(),
+        || true,
+        move || Some(new_root_path.clone()),
+    )
+    .await;
+
+    let response = request(addr, "POST", &format!("/{token}/api/open-folder")).await;
+    assert!(
+        response.starts_with("HTTP/1.1 200"),
+        "expected 200 for a valid folder selection, got: {response}"
+    );
+    let body = body_of(&response);
+    let parsed: serde_json::Value = serde_json::from_str(body)
+        .unwrap_or_else(|err| panic!("body should be valid JSON: {err}, body: {body}"));
+    assert_eq!(parsed["available"], true);
+    assert_eq!(parsed["status"], "ok");
+    let expected_basename = new_root
+        .path()
+        .file_name()
+        .expect("scratch dir should have a basename")
+        .to_string_lossy()
+        .into_owned();
+    assert_eq!(
+        parsed["basename"].as_str(),
+        Some(expected_basename.as_str())
+    );
+    assert_eq!(
+        parsed["absolutePath"].as_str(),
+        Some(new_root.path().display().to_string().as_str())
+    );
+
+    // Both /api/root and /api/tree now reflect the new root, not the old one.
+    let root_response = get(addr, &format!("/{token}/api/root")).await;
+    let root_parsed: serde_json::Value = serde_json::from_str(body_of(&root_response)).unwrap();
+    assert_eq!(
+        root_parsed["absolutePath"].as_str(),
+        Some(new_root.path().display().to_string().as_str())
+    );
+
+    let tree_response = get(addr, &format!("/{token}/api/tree")).await;
+    let tree_parsed: serde_json::Value = serde_json::from_str(body_of(&tree_response)).unwrap();
+    let paths: std::collections::BTreeSet<String> = tree_parsed["entries"]
+        .as_array()
+        .expect("body should have an 'entries' array")
+        .iter()
+        .map(|entry| {
+            entry["path"]
+                .as_str()
+                .expect("entry should have a string path")
+                .to_string()
+        })
+        .collect();
+    assert_eq!(
+        paths,
+        ["new-only.txt"].into_iter().map(String::from).collect()
+    );
+
+    // The old root's file is no longer reachable at all -- not just missing
+    // from the tree listing -- and the new root's file is.
+    let old_file_response = get(addr, &format!("/{token}/api/file?path=old-only.txt")).await;
+    assert!(
+        old_file_response.starts_with("HTTP/1.1 404"),
+        "expected the old root's file to be unreachable after switching roots, got: {old_file_response}"
+    );
+
+    let new_file_response = get(addr, &format!("/{token}/api/file?path=new-only.txt")).await;
+    assert!(
+        new_file_response.starts_with("HTTP/1.1 200"),
+        "expected the new root's file to be reachable after switching roots, got: {new_file_response}"
+    );
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn api_open_folder_returns_400_and_leaves_the_root_untouched_for_a_selected_file() {
+    // A native folder-picker dialog can in principle be tricked/scripted into
+    // returning something that isn't a directory; `resolve_root` -- the same
+    // validation every other root goes through -- must reject it just the
+    // same as an invalid `ROOT` CLI argument would.
+    let scratch = ScratchDir::new("open-folder-not-a-dir");
+    let selected_file = scratch.path().join("not-a-directory.txt");
+    fs::write(&selected_file, "not a directory").unwrap();
+
+    let (addr, token, server) = spawn_test_server_with_fakes(
+        scratch.path().to_path_buf(),
+        || true,
+        move || Some(selected_file.clone()),
+    )
+    .await;
+
+    let response = request(addr, "POST", &format!("/{token}/api/open-folder")).await;
+    assert!(
+        response.starts_with("HTTP/1.1 400"),
+        "expected 400 when the selected path is not a directory, got: {response}"
+    );
+    let body = body_of(&response);
+    let parsed: serde_json::Value = serde_json::from_str(body)
+        .unwrap_or_else(|err| panic!("body should be valid JSON: {err}, body: {body}"));
+    assert_eq!(parsed["available"], true);
+    assert_eq!(parsed["status"], "error");
+    assert!(
+        parsed["message"]
+            .as_str()
+            .expect("error response should carry a message")
+            .contains("is not a directory"),
+        "expected a directory-specific message, got: {body}"
+    );
+
+    let root_response = get(addr, &format!("/{token}/api/root")).await;
+    let root_parsed: serde_json::Value = serde_json::from_str(body_of(&root_response)).unwrap();
+    assert_eq!(
+        root_parsed["absolutePath"].as_str(),
+        Some(scratch.path().display().to_string().as_str())
+    );
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn api_open_folder_returns_400_for_a_selected_path_that_does_not_exist() {
+    let scratch = ScratchDir::new("open-folder-missing-path");
+    let missing_path = scratch.path().join("this-should-not-exist-abc123");
+
+    let (addr, token, server) = spawn_test_server_with_fakes(
+        scratch.path().to_path_buf(),
+        || true,
+        move || Some(missing_path.clone()),
+    )
+    .await;
+
+    let response = request(addr, "POST", &format!("/{token}/api/open-folder")).await;
+    assert!(
+        response.starts_with("HTTP/1.1 400"),
+        "expected 400 when the selected path doesn't exist, got: {response}"
+    );
+
+    let root_response = get(addr, &format!("/{token}/api/root")).await;
+    let root_parsed: serde_json::Value = serde_json::from_str(body_of(&root_response)).unwrap();
+    assert_eq!(
+        root_parsed["absolutePath"].as_str(),
+        Some(scratch.path().display().to_string().as_str())
+    );
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn api_open_folder_parent_traversal_protection_applies_to_the_new_root() {
+    let old_root = ScratchDir::new("open-folder-boundary-old");
+    let new_root = ScratchDir::new("open-folder-boundary-new");
+    let outside = ScratchDir::new("open-folder-boundary-outside");
+    fs::write(outside.path().join("secret.txt"), "outside content").unwrap();
+    let outside_name = outside
+        .path()
+        .file_name()
+        .expect("outside scratch dir should have a basename")
+        .to_string_lossy()
+        .into_owned();
+    let new_root_path = new_root.path().to_path_buf();
+
+    let (addr, token, server) = spawn_test_server_with_fakes(
+        old_root.path().to_path_buf(),
+        || true,
+        move || Some(new_root_path.clone()),
+    )
+    .await;
+
+    let open_response = request(addr, "POST", &format!("/{token}/api/open-folder")).await;
+    assert!(
+        open_response.starts_with("HTTP/1.1 200"),
+        "expected the folder switch itself to succeed, got: {open_response}"
+    );
+
+    let traversal_response = get(
+        addr,
+        &format!("/{token}/api/file?path=../{outside_name}/secret.txt"),
+    )
+    .await;
+    assert!(
+        traversal_response.starts_with("HTTP/1.1 404"),
+        "expected '../' traversal to stay blocked against the new root, got: {traversal_response}"
+    );
+
+    server.abort();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn api_open_folder_symlink_escape_protection_applies_to_the_new_root() {
+    let old_root = ScratchDir::new("open-folder-symlink-old");
+    let new_root = ScratchDir::new("open-folder-symlink-new");
+    let outside = ScratchDir::new("open-folder-symlink-outside");
+    fs::write(outside.path().join("secret.txt"), "outside content").unwrap();
+    std::os::unix::fs::symlink(
+        outside.path().join("secret.txt"),
+        new_root.path().join("escape.txt"),
+    )
+    .unwrap();
+    let new_root_path = new_root.path().to_path_buf();
+
+    let (addr, token, server) = spawn_test_server_with_fakes(
+        old_root.path().to_path_buf(),
+        || true,
+        move || Some(new_root_path.clone()),
+    )
+    .await;
+
+    let open_response = request(addr, "POST", &format!("/{token}/api/open-folder")).await;
+    assert!(
+        open_response.starts_with("HTTP/1.1 200"),
+        "expected the folder switch itself to succeed, got: {open_response}"
+    );
+
+    let symlink_response = get(addr, &format!("/{token}/api/file?path=escape.txt")).await;
+    assert!(
+        symlink_response.starts_with("HTTP/1.1 404"),
+        "expected a symlink escaping the new root to stay blocked, got: {symlink_response}"
+    );
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn api_open_folder_returns_404_for_wrong_token() {
+    let (addr, _token, server) = spawn_test_server().await;
+
+    let response = request(addr, "POST", "/not-the-session-token/api/open-folder").await;
+    assert!(
+        response.starts_with("HTTP/1.1 404"),
+        "expected 404 for api/open-folder with the wrong token, got: {response}"
+    );
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn api_open_folder_returns_405_for_get() {
+    let (addr, token, server) = spawn_test_server().await;
+
+    let response = get(addr, &format!("/{token}/api/open-folder")).await;
+    assert!(
+        response.starts_with("HTTP/1.1 405"),
+        "expected 405 for a GET to api/open-folder, got: {response}"
+    );
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn api_open_folder_returns_404_for_extra_path_segment() {
+    let (addr, token, server) = spawn_test_server().await;
+
+    let response = request(addr, "POST", &format!("/{token}/api/open-folder/extra")).await;
+    assert!(
+        response.starts_with("HTTP/1.1 404"),
+        "expected 404 for api/open-folder with an extra path segment, got: {response}"
     );
 
     server.abort();
