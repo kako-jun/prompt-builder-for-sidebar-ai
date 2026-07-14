@@ -177,6 +177,10 @@ const MESSAGES = {
     "root.loading": "Loading…",
     "root.loadFailed": "(failed to load root)",
     "root.loadFailedHttp": "(failed to load root: HTTP {status})",
+    "openFolder.button": "Open another folder",
+    "openFolder.unavailable":
+      "No native folder dialog is available here (e.g. a headless session with no display). Restart with a different ROOT argument instead.",
+    "openFolder.failed": "Could not open that folder: {error}",
     "preset.allText": "All text files",
     "preset.sourceOnly": "Source only",
     "preset.docsOnly": "Docs only",
@@ -351,6 +355,10 @@ const MESSAGES = {
     "root.loading": "読み込み中…",
     "root.loadFailed": "（ルートの読み込みに失敗しました）",
     "root.loadFailedHttp": "（ルートの読み込みに失敗しました: HTTP {status}）",
+    "openFolder.button": "別のフォルダを開く",
+    "openFolder.unavailable":
+      "ここではネイティブのフォルダ選択ダイアログを利用できません（画面のないヘッドレスなセッションなど）。別のROOT引数を指定して起動し直してください。",
+    "openFolder.failed": "そのフォルダを開けませんでした: {error}",
     "preset.allText": "すべてのテキストファイル",
     "preset.sourceOnly": "ソースのみ",
     "preset.docsOnly": "ドキュメントのみ",
@@ -548,6 +556,7 @@ async function init() {
   syncLocaleControl();
   el.rootBasename.textContent = t("root.loading");
   wirePresetButtons();
+  wireOpenFolderButton();
   wireSearchInput();
   wireRecentClear();
   wireResizer();
@@ -617,6 +626,119 @@ async function loadTree() {
   } catch (err) {
     state.treeLoadError = { key: "tree.loadFailed", params: null };
     renderTree();
+  }
+}
+
+// ---- Open another folder (issue #11) ----
+
+function wireOpenFolderButton() {
+  if (!el.openFolderButton) return;
+  el.openFolderButton.addEventListener("click", () => {
+    openAnotherFolder();
+  });
+}
+
+/** Shows a message under the "Open another folder" button -- used only for
+ * the two outcomes that need an explanation (no native dialog available, or
+ * a selection that failed re-validation); a plain cancel is deliberately
+ * silent (see `openAnotherFolder`). Left visible until the next attempt
+ * rather than auto-hiding on a timer, since both messages can be long enough
+ * to need real reading time. */
+function showOpenFolderStatus(message) {
+  if (!el.openFolderStatus) return;
+  el.openFolderStatus.textContent = message;
+  el.openFolderStatus.hidden = false;
+}
+
+function hideOpenFolderStatus() {
+  if (!el.openFolderStatus) return;
+  el.openFolderStatus.hidden = true;
+  el.openFolderStatus.textContent = "";
+}
+
+/** Clears every piece of explorer/composer state that belongs to the
+ * previous root -- the tree, checked/expanded selections, open file panels
+ * and their cached content, per-file line selections, and the generated
+ * prompt -- before `openAnotherFolder` reloads the root/tree from the
+ * server. Composer *settings* (goal/target/filename/context-mode/extra
+ * instructions) are deliberately left alone: they describe how the user
+ * wants a prompt built, not which files it's built from, so there's no
+ * reason a folder switch should reset them. */
+function resetExplorerStateForNewRoot() {
+  state.entries = [];
+  state.rootNode = null;
+  state.nodesByPath = new Map();
+  state.checked = new Set();
+  state.expandedDirs = new Set();
+  state.openFiles = [];
+  state.fileContentCache = new Map();
+  state.lineSelections = new Map();
+  state.lastGeneratedPrompt = "";
+  state.promptGenerated = false;
+  state.treeLoadError = null;
+  state.rootLoadError = null;
+  markPromptDirty();
+  if (el.promptResult) el.promptResult.value = "";
+  renderFilePanels();
+}
+
+/** Click handler for the "Open another folder" button: calls `POST
+ * /api/open-folder`, which shows a native folder-selection dialog on the
+ * backend (never handing the browser arbitrary filesystem access) and
+ * reports one of four outcomes -- see `OpenFolderResponse` in src/lib.rs for
+ * the exact status/HTTP-code matrix this mirrors:
+ *
+ * - `"unavailable"`: no dialog could be shown at all (e.g. no display on a
+ *   headless backend) -- surfaced via `showOpenFolderStatus`.
+ * - `"cancelled"`: the user closed the dialog without picking anything --
+ *   deliberately silent, since the current root is simply still active (the
+ *   native dialog's own Cancel is already unambiguous feedback).
+ * - `"error"`: a selection was made but failed re-validation (e.g. removed
+ *   between the pick and the check) -- surfaced via `showOpenFolderStatus`.
+ * - `"ok"`: the root was replaced. `resetExplorerStateForNewRoot` clears
+ *   every piece of state tied to the old root before `loadRoot`/`loadTree`
+ *   repopulate the explorer from the new one, so no stale selection,
+ *   reference, or generated prompt from the old root can survive the
+ *   switch.
+ */
+async function openAnotherFolder() {
+  if (!el.openFolderButton) return;
+
+  el.openFolderButton.disabled = true;
+  hideOpenFolderStatus();
+
+  try {
+    const response = await fetch(apiUrl("/api/open-folder"), { method: "POST" });
+    let data;
+    try {
+      data = await response.json();
+    } catch (err) {
+      showOpenFolderStatus(t("openFolder.failed", { error: t("toast.unknownError") }));
+      return;
+    }
+
+    switch (data.status) {
+      case "unavailable":
+        showOpenFolderStatus(t("openFolder.unavailable"));
+        break;
+      case "cancelled":
+        break;
+      case "error":
+        showOpenFolderStatus(t("openFolder.failed", { error: data.message || t("toast.unknownError") }));
+        break;
+      case "ok":
+        resetExplorerStateForNewRoot();
+        await Promise.all([loadRoot(), loadTree()]);
+        break;
+      default:
+        showOpenFolderStatus(t("openFolder.failed", { error: t("toast.unknownError") }));
+    }
+  } catch (err) {
+    showOpenFolderStatus(
+      t("openFolder.failed", { error: err && err.message ? err.message : t("toast.unknownError") })
+    );
+  } finally {
+    el.openFolderButton.disabled = false;
   }
 }
 
@@ -3233,6 +3355,8 @@ if (typeof document !== "undefined") {
     securityNoticeCollapsed: document.getElementById("security-notice-collapsed"),
     rootBasename: document.getElementById("root-basename"),
     rootPath: document.getElementById("root-path"),
+    openFolderButton: document.getElementById("open-folder-button"),
+    openFolderStatus: document.getElementById("open-folder-status"),
     treeRoot: document.getElementById("tree-root"),
     treeTruncationWarning: document.getElementById("tree-truncation-warning"),
     searchInput: document.getElementById("search-input"),
