@@ -490,7 +490,7 @@ export function t(key, params) {
   return tr(getLocale(), key, params);
 }
 
-const state = {
+export const state = {
   entries: [],
   rootNode: null,
   nodesByPath: new Map(),
@@ -532,7 +532,7 @@ const state = {
   rootLoadError: null,
 };
 
-let el = {};
+export let el = {};
 
 async function init() {
   wireLocaleSwitcher();
@@ -2086,7 +2086,7 @@ function showCopyToast(ok, error) {
  * other button `flashCopyFeedback` is used on (file panel Copy, directory
  * copy, "Copy all checked") has no such lock and re-enables unconditionally,
  * same as before. */
-function flashCopyFeedback(button, ok, error) {
+export function flashCopyFeedback(button, ok, error) {
   if (!button.isConnected) {
     showCopyToast(ok, error);
     return;
@@ -2723,7 +2723,7 @@ function repopulatePromptSelects() {
   }
 }
 
-function wirePromptComposer() {
+export function wirePromptComposer() {
   populateSelect(el.promptGoal, PROMPT_GOALS);
   populateSelect(el.promptTarget, PROMPT_TARGETS);
   populateSelect(el.promptOutput, PROMPT_OUTPUTS);
@@ -2830,7 +2830,7 @@ let promptGenerationInFlight = 0;
 /** Pairs with `endPromptGenerationUiLock()` below; see
  * `promptGenerationInFlight`'s doc comment for why this exists instead of
  * each caller setting `.disabled` itself. */
-function beginPromptGenerationUiLock() {
+export function beginPromptGenerationUiLock() {
   promptGenerationInFlight++;
   el.promptGenerate.disabled = true;
   el.promptCopy.disabled = true;
@@ -2841,7 +2841,7 @@ function beginPromptGenerationUiLock() {
  * `finally` can never re-enable the buttons out from under a still-pending
  * later call (issue #43 re-review follow-up; see `promptGenerationInFlight`'s
  * doc comment). */
-function endPromptGenerationUiLock() {
+export function endPromptGenerationUiLock() {
   promptGenerationInFlight = Math.max(0, promptGenerationInFlight - 1);
   if (promptGenerationInFlight === 0) {
     el.promptGenerate.disabled = false;
@@ -2862,7 +2862,7 @@ function endPromptGenerationUiLock() {
  * an input changing, it's the entire point of leaving the result editable
  * (see `regeneratePromptIfUnedited`'s doc comment for the separate "was it
  * hand-edited" concept this must not be confused with). */
-function markPromptDirty() {
+export function markPromptDirty() {
   // Invalidates any in-flight `generatePrompt()` call (issue #43 QA follow-up,
   // F1): see `promptGenerationSeq`'s doc comment above.
   promptGenerationSeq++;
@@ -3061,7 +3061,7 @@ async function gatherDiffEntries() {
  * `await`s (below) were pending, this call is stale and returns without
  * touching `el.promptResult`/`state` at all -- see `promptGenerationSeq`'s
  * doc comment for the full rationale. */
-async function generatePrompt() {
+export async function generatePrompt() {
   const seq = ++promptGenerationSeq;
   const goal = el.promptGoal.value;
   const target = el.promptTarget.value;
@@ -3191,7 +3191,7 @@ function syncLocaleControl() {
  * switch itself depends on the regeneration finishing; `generatePrompt()`
  * writes the textarea (and this function releases its share of the lock)
  * whenever it resolves. */
-async function regeneratePromptIfUnedited() {
+export async function regeneratePromptIfUnedited() {
   if (state.promptGenerated && el.promptResult.value === state.lastGeneratedPrompt) {
     beginPromptGenerationUiLock();
     try {
