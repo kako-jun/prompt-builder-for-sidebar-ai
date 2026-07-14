@@ -38,7 +38,15 @@ to an AI API itself and never writes to the served directory.
 2. **The selected root <-> the rest of the filesystem.** The root is the
    explicit boundary the user drew by choosing what directory to run this
    tool against. Nothing outside it should ever become reachable through any
-   endpoint, no matter how the request is shaped.
+   endpoint, no matter how the request is shaped. Issue #11 lets the user
+   *replace* this boundary at runtime (`POST /{token}/api/open-folder`), but
+   only by drawing a new one the same explicit way: through a native
+   folder-selection dialog the local backend shows (never handing the
+   browser itself arbitrary filesystem access), re-validated with the exact
+   same `resolve_root` every `ROOT` CLI argument goes through. Once swapped,
+   the previous root is fully retired, not merely superseded -- every
+   endpoint reads the current root from shared state on each request, so
+   there is no stale code path left that could still serve the old one.
 3. **File content <-> the rendered page's DOM.** File content is untrusted
    input from the tool's own perspective (a file could contain anything,
    including text authored specifically to look like markup or script) and
@@ -65,6 +73,7 @@ to an AI API itself and never writes to the served directory.
 | Prompt injection: a file's content contains text written to manipulate whatever AI later reads the copied prompt. | **Not preventable by this tool** -- there is no reliable way to distinguish "legitimate file content" from "content crafted to look like an instruction" from outside the AI itself. Disclosed instead: an on-page notice (see `assets/index.html`'s `#security-notice`) and this document. |
 | Copied content is sent to a third-party AI provider the user didn't fully consider (privacy). | **The user's judgment, not this tool's to enforce** -- disclosed via the same on-page notice and the README's disclaimer. This tool's own job ends at "put correctly-scoped, unambiguously-delimited text on the clipboard." |
 | `ROOT` given as a GitHub URL (issue #14) clones from an unexpected location, or the clone itself is unbounded. | The clone URL is always reconstructed as `https://github.com/{owner}/{repo}.git` from the parsed owner/repo, never the raw input string, so the CLI argument can't inject a different protocol or host at the URL-parsing level. Once on disk, the clone is validated identically to any other local root -- no new logic needed there. **Not mitigated**: `git clone --depth 1` bounds history but not working-tree size, and the clone has no timeout; see "Explicitly out of scope" below. |
+| "Open another folder" (issue #11) is used to smuggle in a path outside what the user meant to browse, or the previous root stays reachable after the switch. | The browser never picks the path itself -- `POST /{token}/api/open-folder` only ever triggers a *native, backend-shown* dialog (`rfd::FileDialog::pick_folder`), so the request body can't carry an arbitrary path for the server to trust. Whatever the dialog returns still goes through the identical `resolve_root` validation as the `ROOT` CLI argument (must exist, must be a directory, symlinks resolved). Every handler reads the root from shared state fresh on each request rather than capturing it once at startup, so the moment the swap happens the previous root is not just "also still there" -- it is completely unreachable through every endpoint, immediately, for every subsequent request. |
 
 Issue #9 originally shipped `#security-notice` with no dismiss control and no
 "once per session" concession, on the theory that a security disclosure

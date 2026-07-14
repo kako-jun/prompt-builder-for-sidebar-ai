@@ -2,13 +2,13 @@ use axum::{
     extract::{Query, State},
     http::{header, StatusCode},
     response::{Html, IntoResponse, Response},
-    routing::get,
+    routing::{get, post},
     Json, Router,
 };
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, OnceLock, RwLock};
 use uuid::Uuid;
 
 pub mod diff;
@@ -17,6 +17,7 @@ pub mod github_root;
 
 use diff::compute_diff;
 use discovery::{discover_tree, is_probably_binary, FileEntry};
+use github_root::TempDirGuard;
 
 /// HTML shell template embedded in the binary. `/*__STYLE_PLACEHOLDER__*/`,
 /// `//__SCRIPT_PLACEHOLDER__`, and `__ICON_DATA_URI__` are substituted with
@@ -100,6 +101,92 @@ pub fn generate_session_token() -> String {
     Uuid::new_v4().to_string()
 }
 
+/// Shared session state (issue #11): the explorer root became mutable once
+/// the UI could replace it without restarting the CLI, so the plain
+/// `Arc<PathBuf>` every handler used to receive as `State` is replaced by
+/// this struct, wrapped the same way (`Arc<AppState>`).
+///
+/// - `root` is read by every existing handler (`serve_root`/`serve_tree`/
+///   `serve_file`/`serve_diff`) at the start of each request and written by
+///   [`serve_open_folder`] once a newly picked folder passes [`resolve_root`]
+///   -- so every in-flight and future request immediately sees the new root,
+///   and the old root becomes unreachable through every endpoint at once.
+/// - `root_guard` holds the [`TempDirGuard`] for a GitHub-URL clone (issue
+///   #14), if the session was started that way. It used to be a bare local
+///   variable in `main` kept alive only for `Drop`-on-exit timing; now that
+///   the root itself can be replaced mid-session, the guard has to live
+///   exactly as long as its matching root does, so it moves here and is
+///   replaced (dropping the previous guard immediately, not at process exit)
+///   in lockstep with `root`.
+/// - `dialog_available`/`folder_picker` back [`serve_open_folder`]'s native
+///   folder-picker call. In production these are the real environment check
+///   and the real (blocking) `rfd` dialog; tests substitute fakes via
+///   [`build_router_for_test`], since a headless CI runner has no windowing
+///   system to show a real dialog in.
+struct AppState {
+    root: RwLock<PathBuf>,
+    root_guard: RwLock<Option<TempDirGuard>>,
+    dialog_available: Box<dyn Fn() -> bool + Send + Sync>,
+    folder_picker: Box<dyn Fn() -> Option<PathBuf> + Send + Sync>,
+}
+
+impl AppState {
+    fn new(root: PathBuf, root_guard: Option<TempDirGuard>) -> Self {
+        AppState {
+            root: RwLock::new(root),
+            root_guard: RwLock::new(root_guard),
+            dialog_available: Box::new(native_dialog_available),
+            folder_picker: Box::new(|| rfd::FileDialog::new().pick_folder()),
+        }
+    }
+
+    /// Builds fake-backed state for tests: `root_guard` defaults to `None`
+    /// via [`build_router_for_test`] (most tests don't care about it) or is
+    /// seeded explicitly via [`build_router_for_test_with_guard`] (needed to
+    /// test that switching roots via `serve_open_folder` drops the
+    /// *previous* session's guard immediately -- see the `root_guard` doc
+    /// comment above).
+    fn with_fakes_and_guard(
+        root: PathBuf,
+        root_guard: Option<TempDirGuard>,
+        dialog_available: impl Fn() -> bool + Send + Sync + 'static,
+        folder_picker: impl Fn() -> Option<PathBuf> + Send + Sync + 'static,
+    ) -> Self {
+        AppState {
+            root: RwLock::new(root),
+            root_guard: RwLock::new(root_guard),
+            dialog_available: Box::new(dialog_available),
+            folder_picker: Box::new(folder_picker),
+        }
+    }
+}
+
+/// Whether a native folder-picker dialog can plausibly be shown right now.
+/// On Linux, `rfd`'s `xdg-portal` backend (the only Linux backend this
+/// crate enables -- see the `rfd` dependency in `Cargo.toml` -- since the
+/// sibling `wayland` feature only serves `set_parent`-style window
+/// parenting that this app never uses, and pulls in a system
+/// `wayland-client` pkg-config dependency this app doesn't need) needs a
+/// running desktop session; with neither `$DISPLAY` nor `$WAYLAND_DISPLAY`
+/// set (a bare SSH
+/// session, a headless CI runner, ...) there is no windowing system to show
+/// a dialog in at all. `rfd::FileDialog::pick_folder` returns `None` both
+/// when the user cancels and when no dialog could be shown, so this is
+/// checked up front instead of after the fact -- it's what lets
+/// [`serve_open_folder`] report "no dialog available" as a distinct outcome
+/// from "cancelled" (issue #11's "degrades clearly" acceptance criterion).
+/// macOS and Windows always have a windowing system available to a
+/// foreground GUI process, so only the Linux case needs the check.
+#[cfg(target_os = "linux")]
+fn native_dialog_available() -> bool {
+    std::env::var_os("DISPLAY").is_some() || std::env::var_os("WAYLAND_DISPLAY").is_some()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn native_dialog_available() -> bool {
+    true
+}
+
 /// Builds the Axum router for a single session.
 ///
 /// Only paths under `/{token}` are served; every other path, including the
@@ -107,16 +194,80 @@ pub fn generate_session_token() -> String {
 /// session token. `root` is the canonicalized directory the session was
 /// started with (see [`resolve_root`]); it is the security boundary that
 /// `/{token}/api/tree` walks via [`discovery::discover_tree`] and that
-/// `/{token}/api/file` validates every request against.
+/// `/{token}/api/file` validates every request against -- until the user
+/// replaces it via `POST /{token}/api/open-folder` (issue #11), after which
+/// every handler picks up the new root instead.
 pub fn build_router(token: &str, root: PathBuf) -> Router {
-    let state = Arc::new(root);
+    build_router_with_root_guard(token, root, None)
+}
 
+/// Like [`build_router`], but also takes ownership of the [`TempDirGuard`]
+/// for a GitHub-URL-cloned root (issue #14), if any -- used by `main.rs` so
+/// the guard's cleanup-on-drop stays tied to the session's current root
+/// instead of a separate process-lifetime local variable (see the
+/// [`AppState`] doc comment for why that changed).
+pub fn build_router_with_root_guard(
+    token: &str,
+    root: PathBuf,
+    root_guard: Option<TempDirGuard>,
+) -> Router {
+    let state = Arc::new(AppState::new(root, root_guard));
+    build_router_from_state(token, state)
+}
+
+/// Test-only hook for exercising `POST /{token}/api/open-folder` end to end
+/// (issue #11) without a real native dialog: `tests/server.rs` is a separate
+/// integration-test crate, so it cannot see anything gated behind
+/// `#[cfg(test)]` in this one, and this project already exposes similar
+/// test-supporting `pub` items (e.g. `discovery::MAX_SERVABLE_FILE_SIZE`) for
+/// the same reason. `dialog_available`/`folder_picker` replace the real
+/// environment check and the real (blocking) `rfd` call, so a headless CI
+/// runner -- which has no windowing system to show a dialog in at all -- can
+/// still drive the cancel/success/invalid-selection paths deterministically.
+pub fn build_router_for_test(
+    token: &str,
+    root: PathBuf,
+    dialog_available: impl Fn() -> bool + Send + Sync + 'static,
+    folder_picker: impl Fn() -> Option<PathBuf> + Send + Sync + 'static,
+) -> Router {
+    build_router_for_test_with_guard(token, root, None, dialog_available, folder_picker)
+}
+
+/// Like [`build_router_for_test`], but also seeds `state.root_guard` with a
+/// pre-existing [`TempDirGuard`], so a test can start a session that already
+/// holds a guard (e.g. standing in for a GitHub-URL clone, issue #14) and
+/// then verify that `POST /{token}/api/open-folder` drops -- and so removes
+/// from disk -- that *previous* guard immediately on a successful switch,
+/// rather than only at process exit (see the [`AppState`] doc comment for
+/// why that distinction matters). `build_router_for_test` itself stays
+/// guard-less, since every other test using it doesn't need one.
+pub fn build_router_for_test_with_guard(
+    token: &str,
+    root: PathBuf,
+    root_guard: Option<TempDirGuard>,
+    dialog_available: impl Fn() -> bool + Send + Sync + 'static,
+    folder_picker: impl Fn() -> Option<PathBuf> + Send + Sync + 'static,
+) -> Router {
+    let state = Arc::new(AppState::with_fakes_and_guard(
+        root,
+        root_guard,
+        dialog_available,
+        folder_picker,
+    ));
+    build_router_from_state(token, state)
+}
+
+fn build_router_from_state(token: &str, state: Arc<AppState>) -> Router {
     Router::new()
         .route(&format!("/{token}"), get(serve_shell))
         .route(&format!("/{token}/api/root"), get(serve_root))
         .route(&format!("/{token}/api/tree"), get(serve_tree))
         .route(&format!("/{token}/api/file"), get(serve_file))
         .route(&format!("/{token}/api/diff"), get(serve_diff))
+        .route(
+            &format!("/{token}/api/open-folder"),
+            post(serve_open_folder),
+        )
         .fallback(not_found)
         .with_state(state)
 }
@@ -135,17 +286,25 @@ struct RootInfo {
     absolute_path: String,
 }
 
-async fn serve_root(State(root): State<Arc<PathBuf>>) -> impl IntoResponse {
+/// Builds a [`RootInfo`] from a resolved root path -- shared by `serve_root`
+/// and [`serve_open_folder`]'s success response so both report the basename/
+/// absolute-path pair the same way.
+fn root_info(root: &Path) -> RootInfo {
     let basename = root
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| root.display().to_string());
     let absolute_path = root.display().to_string();
 
-    Json(RootInfo {
+    RootInfo {
         basename,
         absolute_path,
-    })
+    }
+}
+
+async fn serve_root(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let root = state.root.read().unwrap().clone();
+    Json(root_info(&root))
 }
 
 /// Response body for `GET /{token}/api/tree`. `truncated` is `true` when
@@ -160,7 +319,8 @@ struct TreeResponse {
     truncated: bool,
 }
 
-async fn serve_tree(State(root): State<Arc<PathBuf>>) -> impl IntoResponse {
+async fn serve_tree(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let root = state.root.read().unwrap().clone();
     let (entries, truncated) = discover_tree(&root);
     Json(TreeResponse { entries, truncated })
 }
@@ -230,7 +390,11 @@ struct FileQuery {
 /// rejected with 400 rather than lossily replacing the invalid bytes, so
 /// callers can tell the difference between "this is text" and "this looked
 /// like text to the NUL-sniff heuristic but isn't valid UTF-8".
-async fn serve_file(State(root): State<Arc<PathBuf>>, Query(query): Query<FileQuery>) -> Response {
+async fn serve_file(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<FileQuery>,
+) -> Response {
+    let root = state.root.read().unwrap().clone();
     let requested_path = match query.path.as_deref() {
         Some(path) if !path.is_empty() => path,
         _ => return (StatusCode::BAD_REQUEST, "missing 'path' query parameter").into_response(),
@@ -305,12 +469,153 @@ struct DiffResponse {
     diff: String,
 }
 
-async fn serve_diff(State(root): State<Arc<PathBuf>>) -> impl IntoResponse {
+async fn serve_diff(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let root = state.root.read().unwrap().clone();
     let result = compute_diff(&root);
     Json(DiffResponse {
         is_git_repo: result.is_git_repo,
         diff: result.diff,
     })
+}
+
+/// Response body for `POST /{token}/api/open-folder` (issue #11). Every
+/// outcome is reported through this struct rather than a bare HTTP status,
+/// since a native dialog's "nothing selected" can mean either "the user
+/// cancelled" (not an error -- the previous root stays active) or "no dialog
+/// could be shown at all" (a distinct, clearly-surfaced degradation, e.g. a
+/// headless Linux session with no `$DISPLAY`/`$WAYLAND_DISPLAY`) --
+/// `rfd::FileDialog::pick_folder` itself returns `None` for both, so
+/// [`serve_open_folder`] tells them apart with `state.dialog_available`
+/// *before* ever calling the picker. `status` is one of:
+///
+/// - `"unavailable"` (HTTP 501): no dialog could be shown; `available` is
+///   `false` and every other field is absent.
+/// - `"cancelled"` (HTTP 200): the dialog was shown but the user picked
+///   nothing; the root is untouched.
+/// - `"error"` (HTTP 400): the user picked something that failed
+///   [`resolve_root`] (e.g. removed between the pick and validation, or not
+///   a directory); `message` explains why. The root is untouched.
+/// - `"ok"` (HTTP 200): the user picked a valid folder; `basename`/
+///   `absolutePath` describe the new root, which has already been swapped
+///   in (see [`serve_open_folder`]).
+#[derive(Serialize)]
+struct OpenFolderResponse {
+    available: bool,
+    status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    basename: Option<String>,
+    #[serde(rename = "absolutePath", skip_serializing_if = "Option::is_none")]
+    absolute_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message: Option<String>,
+}
+
+impl OpenFolderResponse {
+    fn unavailable() -> Self {
+        OpenFolderResponse {
+            available: false,
+            status: "unavailable",
+            basename: None,
+            absolute_path: None,
+            message: None,
+        }
+    }
+
+    fn cancelled() -> Self {
+        OpenFolderResponse {
+            available: true,
+            status: "cancelled",
+            basename: None,
+            absolute_path: None,
+            message: None,
+        }
+    }
+
+    fn ok(info: RootInfo) -> Self {
+        OpenFolderResponse {
+            available: true,
+            status: "ok",
+            basename: Some(info.basename),
+            absolute_path: Some(info.absolute_path),
+            message: None,
+        }
+    }
+
+    fn error(message: String) -> Self {
+        OpenFolderResponse {
+            available: true,
+            status: "error",
+            basename: None,
+            absolute_path: None,
+            message: Some(message),
+        }
+    }
+}
+
+/// Handles `POST /{token}/api/open-folder` (issue #11): the UI's "Open
+/// another folder" action, letting the explorer root be replaced without
+/// restarting the CLI.
+///
+/// `state.dialog_available` is checked first (see its doc comment for why);
+/// if it returns `false`, this returns 501 immediately without ever touching
+/// `state.folder_picker`. Otherwise `state.folder_picker` -- the real,
+/// blocking `rfd::FileDialog::pick_folder` in production, a fake in tests --
+/// runs inside [`tokio::task::spawn_blocking`], since it's a synchronous call
+/// that would otherwise block this request's async worker thread for as long
+/// as the dialog is open.
+///
+/// A picked folder is re-validated with the exact same [`resolve_root`] every
+/// other root goes through -- nothing about how a folder was chosen makes it
+/// exempt from the same "must exist, must be a directory, symlinks resolved"
+/// rules. Only once that succeeds are `state.root` and `state.root_guard`
+/// swapped (dropping any previous GitHub-clone guard immediately, rather than
+/// leaving it to accumulate until process exit -- see the [`AppState`] doc
+/// comment), so a cancelled dialog or a failed re-validation both leave the
+/// current root completely untouched.
+async fn serve_open_folder(State(state): State<Arc<AppState>>) -> Response {
+    if !(state.dialog_available)() {
+        return (
+            StatusCode::NOT_IMPLEMENTED,
+            Json(OpenFolderResponse::unavailable()),
+        )
+            .into_response();
+    }
+
+    let picker_state = Arc::clone(&state);
+    let picked = match tokio::task::spawn_blocking(move || (picker_state.folder_picker)()).await {
+        Ok(picked) => picked,
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(OpenFolderResponse::error(
+                    "the folder-picker task panicked".to_string(),
+                )),
+            )
+                .into_response()
+        }
+    };
+
+    let Some(picked_path) = picked else {
+        return (StatusCode::OK, Json(OpenFolderResponse::cancelled())).into_response();
+    };
+
+    let new_root = match resolve_root(&picked_path) {
+        Ok(new_root) => new_root,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(OpenFolderResponse::error(err)),
+            )
+                .into_response()
+        }
+    };
+
+    let info = root_info(&new_root);
+
+    *state.root.write().unwrap() = new_root;
+    *state.root_guard.write().unwrap() = None;
+
+    (StatusCode::OK, Json(OpenFolderResponse::ok(info))).into_response()
 }
 
 async fn not_found() -> impl IntoResponse {
@@ -322,6 +627,14 @@ mod tests {
     use super::*;
 
     #[test]
+    // `APP_ICON` is `include_bytes!`, so a newer clippy can prove its length
+    // is a fixed, nonzero compile-time constant and flags this assertion as
+    // always-true noise (`const_is_empty`). Pre-existing lint drift, unrelated
+    // to issue #11 -- allowed rather than deleted, since the assertion still
+    // documents and locks in the real invariant (a corrupted/emptied
+    // `assets/icon.png` should fail this test, not just the PNG-magic-bytes
+    // check below).
+    #[allow(clippy::const_is_empty)]
     fn app_icon_is_a_nonempty_png() {
         assert!(
             !APP_ICON.is_empty(),
@@ -574,6 +887,111 @@ mod tests {
         assert!(
             matches!(variant_nibble, '8' | '9' | 'a' | 'b'),
             "UUID variant nibble should be one of 8/9/a/b (RFC 4122): {token}"
+        );
+    }
+
+    /// Serializes every test that mutates `$DISPLAY`/`$WAYLAND_DISPLAY`
+    /// (currently just [`native_dialog_available_reflects_display_env_vars`]
+    /// below), since Rust runs tests in one process by default and these are
+    /// process-wide environment variables -- without this lock, two such
+    /// tests running concurrently could each observe the other's in-progress
+    /// mutation. Kept even though there is only one such test today, so a
+    /// future second one is safe by construction rather than by remembering
+    /// to add this.
+    #[cfg(target_os = "linux")]
+    static DISPLAY_ENV_VAR_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Snapshots one environment variable's current value on construction
+    /// and restores it (set or removed, whichever it was) on drop -- so a
+    /// test can freely overwrite `$DISPLAY`/`$WAYLAND_DISPLAY` and still
+    /// leave the process environment exactly as it found it afterward, even
+    /// if an assertion in between panics (the restoring `Drop` still runs
+    /// during unwinding).
+    #[cfg(target_os = "linux")]
+    struct EnvVarRestorer {
+        name: &'static str,
+        original: Option<std::ffi::OsString>,
+    }
+
+    #[cfg(target_os = "linux")]
+    impl EnvVarRestorer {
+        fn capture(name: &'static str) -> Self {
+            EnvVarRestorer {
+                name,
+                original: std::env::var_os(name),
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    impl Drop for EnvVarRestorer {
+        fn drop(&mut self) {
+            // SAFETY: `DISPLAY_ENV_VAR_LOCK` is held for the entire lifetime
+            // of every `EnvVarRestorer` (constructed only from inside the
+            // lock's guarded section below), so no other thread can be
+            // reading/writing the environment concurrently with this call.
+            unsafe {
+                match &self.original {
+                    Some(value) => std::env::set_var(self.name, value),
+                    None => std::env::remove_var(self.name),
+                }
+            }
+        }
+    }
+
+    /// Issue #11 should-fix: every existing test reaches `AppState` through
+    /// `with_fakes_and_guard`/`build_router_for_test`, which always inject a fake
+    /// `dialog_available` closure -- so the real, production
+    /// `native_dialog_available` (the `$DISPLAY`/`$WAYLAND_DISPLAY` check
+    /// used on Linux) was never exercised by any test at all; flipping its
+    /// `||` to `&&` still left the whole suite green. This test drives it
+    /// directly instead, covering all four combinations of the two
+    /// variables being set/unset.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn native_dialog_available_reflects_display_env_vars() {
+        let _lock = DISPLAY_ENV_VAR_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _display_restorer = EnvVarRestorer::capture("DISPLAY");
+        let _wayland_restorer = EnvVarRestorer::capture("WAYLAND_DISPLAY");
+
+        // SAFETY: see the `Drop for EnvVarRestorer` comment above -- this
+        // whole function runs under `DISPLAY_ENV_VAR_LOCK`.
+        unsafe {
+            std::env::remove_var("DISPLAY");
+            std::env::remove_var("WAYLAND_DISPLAY");
+        }
+        assert!(
+            !native_dialog_available(),
+            "neither $DISPLAY nor $WAYLAND_DISPLAY set should mean no dialog is available"
+        );
+
+        unsafe {
+            std::env::set_var("DISPLAY", ":0");
+            std::env::remove_var("WAYLAND_DISPLAY");
+        }
+        assert!(
+            native_dialog_available(),
+            "$DISPLAY alone set should mean a dialog is available"
+        );
+
+        unsafe {
+            std::env::remove_var("DISPLAY");
+            std::env::set_var("WAYLAND_DISPLAY", "wayland-0");
+        }
+        assert!(
+            native_dialog_available(),
+            "$WAYLAND_DISPLAY alone set should mean a dialog is available"
+        );
+
+        unsafe {
+            std::env::set_var("DISPLAY", ":0");
+            std::env::set_var("WAYLAND_DISPLAY", "wayland-0");
+        }
+        assert!(
+            native_dialog_available(),
+            "both $DISPLAY and $WAYLAND_DISPLAY set should mean a dialog is available"
         );
     }
 

@@ -107,6 +107,31 @@
         <div class="root-info">
           <h1 id="root-basename" class="root-basename">Loading…</h1>
           <p id="root-path" class="root-path"></p>
+          <!--
+            Issue #11: lets the explorer root be replaced without restarting
+            the CLI. The native folder-selection dialog itself (shown by the
+            local backend, not the browser) is the "explicit confirmation"
+            the issue asks for -- there is deliberately no second in-page
+            confirmation modal on top of it. `#open-folder-status` surfaces
+            the two outcomes that need an explanation ("no dialog available"
+            on a headless/no-display backend, or a selection that failed
+            re-validation); a plain cancel is silent, since the current root
+            simply stays active (see `openAnotherFolder` in app.js).
+          -->
+          <button type="button" id="open-folder-button" class="open-folder-button">
+            <svg class="open-folder-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+              <path
+                d="M2 4.5a1 1 0 0 1 1-1h3.2l1.1 1.4H13a1 1 0 0 1 1 1V12a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1z"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.2"
+                stroke-linejoin="round"
+                stroke-linecap="round"
+              />
+            </svg>
+            <span data-i18n="openFolder.button">Open another folder</span>
+          </button>
+          <p id="open-folder-status" class="open-folder-status" role="status" aria-live="polite" hidden></p>
         </div>
 
         <h2 id="preset-group-title" class="preset-group-title" data-i18n="preset.groupTitle">Quick select</h2>

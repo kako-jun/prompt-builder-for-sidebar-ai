@@ -25,9 +25,9 @@ always-visible text (issue #35; issue #15 had originally left the name
 hover-only, in the logo's `alt`/`title`, which stay as a tooltip/fallback).
 The name is a proper noun, so it's identical in every locale, and shrinks
 with an ellipsis rather than overflowing the row at the explorer-pane's
-220px minimum width. The logo itself is intentionally not a link or button
--- this is a single-root-per-session tool, so there is nowhere to navigate
-"home" to (that becomes meaningful once issue #11 adds a root picker).
+220px minimum width. The logo itself is intentionally not a link or button -- switching roots has
+its own dedicated control instead (see "Open another folder" below), so the
+logo has nowhere else useful to navigate to.
 
 ## Security notice (dismiss / collapse in place)
 
@@ -64,6 +64,38 @@ The current behavior:
   text written to steer an AI), and whatever gets copied out is handed to
   a third-party AI this tool has no control over. What to share remains the
   user's call either way -- the notice discloses, it doesn't gate anything.
+
+## Open another folder
+
+The "Open another folder" button (issue #11) sits directly under the root
+name/path, styled as a dashed/muted chip (`.open-folder-button`, matching
+"Clear selection"'s ghost treatment) rather than a primary action -- it's a
+deliberate but infrequent action, not a one-shot preset or a "Generate
+prompt"-weight commitment. Clicking it calls `POST /{token}/api/open-folder`,
+which shows a *native* folder-selection dialog from the local backend (see
+`docs/API.md`); the browser itself never gets arbitrary filesystem access,
+and confirming a folder in that native dialog is the "explicit confirmation"
+the feature needs -- there is deliberately no second in-page modal on top of
+it.
+
+Three outcomes follow from the endpoint's JSON response:
+
+- **Cancelled**: nothing happens. The native dialog's own Cancel is already
+  unambiguous feedback, so a second on-page message would be redundant.
+- **No dialog available** (Linux only, no `$DISPLAY`/`$WAYLAND_DISPLAY`) or
+  **an invalid selection** (re-validation failed): a message appears under
+  the button (`#open-folder-status`, `role="status"` so it's announced to
+  assistive tech) and stays until the next attempt -- it doesn't auto-hide
+  on a timer like the copy toast, since both messages can run long enough to
+  need real reading time.
+- **A folder was picked and validated**: the tree, every checked file, every
+  open file panel and its cached content, per-panel collapsed state,
+  per-file line selections, the recently-opened-files list, and the
+  generated prompt are all cleared (`resetExplorerStateForNewRoot` in
+  app.js) before the root/tree are reloaded from the server -- nothing from
+  the previous root survives the switch. Composer *settings* (goal, target,
+  filename, context mode, extra instructions) are left alone, since they
+  describe how a prompt should be built, not which files it's built from.
 
 ## Quick select chips
 

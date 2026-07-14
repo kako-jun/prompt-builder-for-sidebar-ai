@@ -262,6 +262,60 @@ button {
   overflow-wrap: break-word;
 }
 
+/* Issue #11: a dashed/muted chip, matching `.preset-button-clear`'s ghost
+   treatment -- a deliberate but non-primary action, not a lightweight
+   one-shot preset (`.preset-button`) or the accent-filled primary CTA
+   (`.prompt-generate-button`). */
+.open-folder-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin-top: 0.5rem;
+  background: transparent;
+  border: 1px dashed var(--border);
+  color: var(--text-dim);
+  border-radius: 999px;
+  padding: 0.25rem 0.65rem;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
+.open-folder-button:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.open-folder-button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.open-folder-button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.open-folder-icon {
+  width: 0.75rem;
+  height: 0.75rem;
+  flex-shrink: 0;
+}
+
+/* Surfaces `POST /api/open-folder`'s "no dialog available" and "selection
+   failed" outcomes (a plain cancel is silent -- see the doc comment on the
+   button in index.html). Always `--danger`-colored: both outcomes it's ever
+   shown for are messages the user needs to notice, not a neutral status. */
+.open-folder-status {
+  margin: 0.35rem 0 0;
+  font-size: 0.72rem;
+  color: var(--danger);
+  line-height: 1.4;
+}
+
+.open-folder-status[hidden] {
+  display: none;
+}
+
 /* Issue #25: a small heading above the preset row, styled like the existing
    "Recently opened" section title (.recent-title) so its purpose reads
    immediately as a lightweight, non-committal group of shortcuts. */

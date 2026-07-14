@@ -107,6 +107,20 @@ impl TempDirGuard {
     pub fn path(&self) -> &Path {
         &self.0
     }
+
+    /// Test-only constructor that wraps an arbitrary path in a
+    /// [`TempDirGuard`] without going through a real `git clone`
+    /// ([`clone_github_root`]). `tests/server.rs` is a separate
+    /// integration-test crate, so it cannot see anything gated behind
+    /// `#[cfg(test)]` here, and this project already exposes similar
+    /// test-supporting `pub` items for the same reason (see
+    /// [`crate::build_router_for_test`]'s doc comment). Lets a test exercise
+    /// the "switching roots drops the *previous* root's guard immediately"
+    /// behavior (issue #11) with a plain scratch directory standing in for a
+    /// GitHub-URL clone, instead of needing a real network clone.
+    pub fn for_test(path: PathBuf) -> Self {
+        TempDirGuard(path)
+    }
 }
 
 impl Drop for TempDirGuard {

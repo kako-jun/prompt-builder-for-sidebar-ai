@@ -1,6 +1,6 @@
 use clap::Parser;
 use prompt_builder_for_sidebar_ai::github_root::{parse_github_root_url, resolve_root_arg};
-use prompt_builder_for_sidebar_ai::{build_router, generate_session_token};
+use prompt_builder_for_sidebar_ai::{build_router_with_root_guard, generate_session_token};
 use std::process::ExitCode;
 use tokio::net::TcpListener;
 
@@ -19,11 +19,14 @@ struct Cli {
 async fn main() -> ExitCode {
     let cli = Cli::parse();
 
-    // `_root_clone_guard` is never read again after this -- it only needs to
-    // stay alive until the end of `main` so its `Drop` impl removes the
-    // temporary clone directory on exit. `None` for an ordinary local-path
-    // `ROOT`, which never creates one.
-    let (root, _root_clone_guard) = match resolve_root_arg(&cli.root) {
+    // `root_clone_guard` is `Some` only when `ROOT` was a GitHub URL (issue
+    // #14), and is handed to `build_router_with_root_guard` below rather than
+    // kept as a bare local variable: since issue #11 lets the UI replace the
+    // root mid-session, the guard's cleanup-on-drop must be tied to whichever
+    // root is *currently* active (held inside the router's shared state), not
+    // to `main`'s own stack frame. `None` for an ordinary local-path `ROOT`,
+    // which never creates one.
+    let (root, root_clone_guard) = match resolve_root_arg(&cli.root) {
         Ok(result) => result,
         Err(err) => {
             eprintln!("error: {err}");
@@ -32,7 +35,7 @@ async fn main() -> ExitCode {
     };
 
     let token = generate_session_token();
-    let router = build_router(&token, root.clone());
+    let router = build_router_with_root_guard(&token, root.clone(), root_clone_guard);
 
     let listener = match TcpListener::bind("127.0.0.1:0").await {
         Ok(listener) => listener,
