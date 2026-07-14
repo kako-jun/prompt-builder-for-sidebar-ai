@@ -658,12 +658,18 @@ function hideOpenFolderStatus() {
 
 /** Clears every piece of explorer/composer state that belongs to the
  * previous root -- the tree, checked/expanded selections, open file panels
- * and their cached content, per-file line selections, and the generated
- * prompt -- before `openAnotherFolder` reloads the root/tree from the
- * server. Composer *settings* (goal/target/filename/context-mode/extra
- * instructions) are deliberately left alone: they describe how the user
- * wants a prompt built, not which files it's built from, so there's no
- * reason a folder switch should reset them. */
+ * and their cached content, per-panel collapsed state, per-file line
+ * selections, the recently-opened-files list, and the generated prompt --
+ * before `openAnotherFolder` reloads the root/tree from the server. Mirrors
+ * `closeFile`'s own state clearing (it clears `collapsedPanels`/
+ * `fileContentCache`/`lineSelections` per closed file) plus the recent-files
+ * list, so a new root that happens to share a relative path with the old one
+ * (e.g. both have a `README.md`) doesn't inherit stale collapsed-panel or
+ * recently-opened state left over from the old root. Composer *settings*
+ * (goal/target/filename/context-mode/extra instructions) are deliberately
+ * left alone: they describe how the user wants a prompt built, not which
+ * files it's built from, so there's no reason a folder switch should reset
+ * them. */
 function resetExplorerStateForNewRoot() {
   state.entries = [];
   state.rootNode = null;
@@ -672,6 +678,7 @@ function resetExplorerStateForNewRoot() {
   state.expandedDirs = new Set();
   state.openFiles = [];
   state.fileContentCache = new Map();
+  state.collapsedPanels = new Set();
   state.lineSelections = new Map();
   state.lastGeneratedPrompt = "";
   state.promptGenerated = false;
@@ -679,6 +686,7 @@ function resetExplorerStateForNewRoot() {
   state.rootLoadError = null;
   markPromptDirty();
   if (el.promptResult) el.promptResult.value = "";
+  clearRecent();
   renderFilePanels();
 }
 

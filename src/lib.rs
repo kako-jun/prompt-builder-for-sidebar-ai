@@ -140,14 +140,21 @@ impl AppState {
         }
     }
 
-    fn with_fakes(
+    /// Builds fake-backed state for tests: `root_guard` defaults to `None`
+    /// via [`build_router_for_test`] (most tests don't care about it) or is
+    /// seeded explicitly via [`build_router_for_test_with_guard`] (needed to
+    /// test that switching roots via `serve_open_folder` drops the
+    /// *previous* session's guard immediately -- see the `root_guard` doc
+    /// comment above).
+    fn with_fakes_and_guard(
         root: PathBuf,
+        root_guard: Option<TempDirGuard>,
         dialog_available: impl Fn() -> bool + Send + Sync + 'static,
         folder_picker: impl Fn() -> Option<PathBuf> + Send + Sync + 'static,
     ) -> Self {
         AppState {
             root: RwLock::new(root),
-            root_guard: RwLock::new(None),
+            root_guard: RwLock::new(root_guard),
             dialog_available: Box::new(dialog_available),
             folder_picker: Box::new(folder_picker),
         }
@@ -218,7 +225,30 @@ pub fn build_router_for_test(
     dialog_available: impl Fn() -> bool + Send + Sync + 'static,
     folder_picker: impl Fn() -> Option<PathBuf> + Send + Sync + 'static,
 ) -> Router {
-    let state = Arc::new(AppState::with_fakes(root, dialog_available, folder_picker));
+    build_router_for_test_with_guard(token, root, None, dialog_available, folder_picker)
+}
+
+/// Like [`build_router_for_test`], but also seeds `state.root_guard` with a
+/// pre-existing [`TempDirGuard`], so a test can start a session that already
+/// holds a guard (e.g. standing in for a GitHub-URL clone, issue #14) and
+/// then verify that `POST /{token}/api/open-folder` drops -- and so removes
+/// from disk -- that *previous* guard immediately on a successful switch,
+/// rather than only at process exit (see the [`AppState`] doc comment for
+/// why that distinction matters). `build_router_for_test` itself stays
+/// guard-less, since every other test using it doesn't need one.
+pub fn build_router_for_test_with_guard(
+    token: &str,
+    root: PathBuf,
+    root_guard: Option<TempDirGuard>,
+    dialog_available: impl Fn() -> bool + Send + Sync + 'static,
+    folder_picker: impl Fn() -> Option<PathBuf> + Send + Sync + 'static,
+) -> Router {
+    let state = Arc::new(AppState::with_fakes_and_guard(
+        root,
+        root_guard,
+        dialog_available,
+        folder_picker,
+    ));
     build_router_from_state(token, state)
 }
 
@@ -852,6 +882,111 @@ mod tests {
         assert!(
             matches!(variant_nibble, '8' | '9' | 'a' | 'b'),
             "UUID variant nibble should be one of 8/9/a/b (RFC 4122): {token}"
+        );
+    }
+
+    /// Serializes every test that mutates `$DISPLAY`/`$WAYLAND_DISPLAY`
+    /// (currently just [`native_dialog_available_reflects_display_env_vars`]
+    /// below), since Rust runs tests in one process by default and these are
+    /// process-wide environment variables -- without this lock, two such
+    /// tests running concurrently could each observe the other's in-progress
+    /// mutation. Kept even though there is only one such test today, so a
+    /// future second one is safe by construction rather than by remembering
+    /// to add this.
+    #[cfg(target_os = "linux")]
+    static DISPLAY_ENV_VAR_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Snapshots one environment variable's current value on construction
+    /// and restores it (set or removed, whichever it was) on drop -- so a
+    /// test can freely overwrite `$DISPLAY`/`$WAYLAND_DISPLAY` and still
+    /// leave the process environment exactly as it found it afterward, even
+    /// if an assertion in between panics (the restoring `Drop` still runs
+    /// during unwinding).
+    #[cfg(target_os = "linux")]
+    struct EnvVarRestorer {
+        name: &'static str,
+        original: Option<std::ffi::OsString>,
+    }
+
+    #[cfg(target_os = "linux")]
+    impl EnvVarRestorer {
+        fn capture(name: &'static str) -> Self {
+            EnvVarRestorer {
+                name,
+                original: std::env::var_os(name),
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    impl Drop for EnvVarRestorer {
+        fn drop(&mut self) {
+            // SAFETY: `DISPLAY_ENV_VAR_LOCK` is held for the entire lifetime
+            // of every `EnvVarRestorer` (constructed only from inside the
+            // lock's guarded section below), so no other thread can be
+            // reading/writing the environment concurrently with this call.
+            unsafe {
+                match &self.original {
+                    Some(value) => std::env::set_var(self.name, value),
+                    None => std::env::remove_var(self.name),
+                }
+            }
+        }
+    }
+
+    /// Issue #11 should-fix: every existing test reaches `AppState` through
+    /// `with_fakes`/`build_router_for_test`, which always inject a fake
+    /// `dialog_available` closure -- so the real, production
+    /// `native_dialog_available` (the `$DISPLAY`/`$WAYLAND_DISPLAY` check
+    /// used on Linux) was never exercised by any test at all; flipping its
+    /// `||` to `&&` still left the whole suite green. This test drives it
+    /// directly instead, covering all four combinations of the two
+    /// variables being set/unset.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn native_dialog_available_reflects_display_env_vars() {
+        let _lock = DISPLAY_ENV_VAR_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _display_restorer = EnvVarRestorer::capture("DISPLAY");
+        let _wayland_restorer = EnvVarRestorer::capture("WAYLAND_DISPLAY");
+
+        // SAFETY: see the `Drop for EnvVarRestorer` comment above -- this
+        // whole function runs under `DISPLAY_ENV_VAR_LOCK`.
+        unsafe {
+            std::env::remove_var("DISPLAY");
+            std::env::remove_var("WAYLAND_DISPLAY");
+        }
+        assert!(
+            !native_dialog_available(),
+            "neither $DISPLAY nor $WAYLAND_DISPLAY set should mean no dialog is available"
+        );
+
+        unsafe {
+            std::env::set_var("DISPLAY", ":0");
+            std::env::remove_var("WAYLAND_DISPLAY");
+        }
+        assert!(
+            native_dialog_available(),
+            "$DISPLAY alone set should mean a dialog is available"
+        );
+
+        unsafe {
+            std::env::remove_var("DISPLAY");
+            std::env::set_var("WAYLAND_DISPLAY", "wayland-0");
+        }
+        assert!(
+            native_dialog_available(),
+            "$WAYLAND_DISPLAY alone set should mean a dialog is available"
+        );
+
+        unsafe {
+            std::env::set_var("DISPLAY", ":0");
+            std::env::set_var("WAYLAND_DISPLAY", "wayland-0");
+        }
+        assert!(
+            native_dialog_available(),
+            "both $DISPLAY and $WAYLAND_DISPLAY set should mean a dialog is available"
         );
     }
 

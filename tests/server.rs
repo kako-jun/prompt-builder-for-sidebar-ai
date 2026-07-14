@@ -1,4 +1,7 @@
-use prompt_builder_for_sidebar_ai::{build_router, build_router_for_test, generate_session_token};
+use prompt_builder_for_sidebar_ai::github_root::TempDirGuard;
+use prompt_builder_for_sidebar_ai::{
+    build_router, build_router_for_test, build_router_for_test_with_guard, generate_session_token,
+};
 use std::fs;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -121,6 +124,36 @@ async fn spawn_test_server_with_fakes(
 ) -> (SocketAddr, String, JoinHandle<()>) {
     let token = generate_session_token();
     let router = build_router_for_test(&token, root, dialog_available, folder_picker);
+
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("should bind an available loopback port");
+    let addr = listener
+        .local_addr()
+        .expect("bound listener should have a local address");
+
+    let server = tokio::spawn(async move {
+        axum::serve(listener, router)
+            .await
+            .expect("server should run without error");
+    });
+
+    (addr, token, server)
+}
+
+/// Like [`spawn_test_server_with_fakes`], but also seeds the session with a
+/// pre-existing [`TempDirGuard`] (issue #11 should-fix: testing that
+/// switching roots drops the *previous* root's guard -- and so removes its
+/// temp directory from disk -- immediately, not just at process exit).
+async fn spawn_test_server_with_fakes_and_guard(
+    root: PathBuf,
+    root_guard: Option<TempDirGuard>,
+    dialog_available: impl Fn() -> bool + Send + Sync + 'static,
+    folder_picker: impl Fn() -> Option<PathBuf> + Send + Sync + 'static,
+) -> (SocketAddr, String, JoinHandle<()>) {
+    let token = generate_session_token();
+    let router =
+        build_router_for_test_with_guard(&token, root, root_guard, dialog_available, folder_picker);
 
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
@@ -1590,6 +1623,97 @@ async fn api_open_folder_symlink_escape_protection_applies_to_the_new_root() {
     assert!(
         symlink_response.starts_with("HTTP/1.1 404"),
         "expected a symlink escaping the new root to stay blocked, got: {symlink_response}"
+    );
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn api_open_folder_drops_the_previous_root_guard_and_removes_its_temp_dir_on_switch() {
+    // issue #11 should-fix: every existing test builds its session via
+    // `AppState::with_fakes`, which always starts `root_guard` at `None`, so
+    // no test could previously construct a session that already held a
+    // guard -- meaning the "switching roots drops the *previous* root's
+    // `TempDirGuard` immediately" behavior (documented in the `AppState`
+    // doc comment and README/THREAT_MODEL.md for the GitHub-clone case,
+    // issue #14) was never exercised: commenting out the guard-clearing
+    // line in `serve_open_folder` left the whole suite green. This test
+    // seeds a guard over a real scratch directory via
+    // `spawn_test_server_with_fakes_and_guard`, switches to a different
+    // root, and checks that the old guarded directory is actually gone from
+    // disk afterward -- `TempDirGuard::drop` is what deletes it, so this is
+    // only observable if the old guard was dropped, not just replaced in
+    // memory.
+    let old_guarded = ScratchDir::new("open-folder-guard-old");
+    let guard = TempDirGuard::for_test(old_guarded.path().to_path_buf());
+
+    let new_root = ScratchDir::new("open-folder-guard-new");
+    let new_root_path = new_root.path().to_path_buf();
+
+    let (addr, token, server) = spawn_test_server_with_fakes_and_guard(
+        old_guarded.path().to_path_buf(),
+        Some(guard),
+        || true,
+        move || Some(new_root_path.clone()),
+    )
+    .await;
+
+    assert!(
+        old_guarded.path().exists(),
+        "sanity check: the guarded directory should exist before the switch"
+    );
+
+    let response = request(addr, "POST", &format!("/{token}/api/open-folder")).await;
+    assert!(
+        response.starts_with("HTTP/1.1 200"),
+        "expected the folder switch itself to succeed, got: {response}"
+    );
+
+    assert!(
+        !old_guarded.path().exists(),
+        "the previous root's guarded temp directory should be removed from disk \
+         immediately after switching roots, not left until process exit"
+    );
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn api_open_folder_returns_500_when_the_picker_task_panics() {
+    // issue #11 should-fix: `serve_open_folder` reports a panicking picker
+    // task as a distinct 500 "the folder-picker task panicked" error (rather
+    // than, say, hanging or crashing the whole server), but no test drove
+    // that path before this one.
+    let scratch = ScratchDir::new("open-folder-picker-panic");
+    let (addr, token, server) = spawn_test_server_with_fakes(
+        scratch.path().to_path_buf(),
+        || true,
+        || panic!("simulated folder-picker panic"),
+    )
+    .await;
+
+    let response = request(addr, "POST", &format!("/{token}/api/open-folder")).await;
+    assert!(
+        response.starts_with("HTTP/1.1 500"),
+        "expected 500 when the folder-picker task panics, got: {response}"
+    );
+    let body = body_of(&response);
+    let parsed: serde_json::Value = serde_json::from_str(body)
+        .unwrap_or_else(|err| panic!("body should be valid JSON: {err}, body: {body}"));
+    assert_eq!(parsed["available"], true);
+    assert_eq!(parsed["status"], "error");
+    assert_eq!(
+        parsed["message"].as_str(),
+        Some("the folder-picker task panicked")
+    );
+
+    // A panicking picker must leave the root exactly as untouched as a
+    // cancelled dialog or a failed re-validation does.
+    let root_response = get(addr, &format!("/{token}/api/root")).await;
+    let root_parsed: serde_json::Value = serde_json::from_str(body_of(&root_response)).unwrap();
+    assert_eq!(
+        root_parsed["absolutePath"].as_str(),
+        Some(scratch.path().display().to_string().as_str())
     );
 
     server.abort();
