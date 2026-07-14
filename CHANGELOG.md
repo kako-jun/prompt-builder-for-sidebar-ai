@@ -1,5 +1,37 @@
 # Changelog
 
+## v0.3.0 — 2026-07-14
+
+### Added
+
+- **"Open another folder" action.** A button next to the explorer root label
+  triggers a native OS folder-picker (via the `rfd` crate), run by the local
+  backend — the browser never receives arbitrary filesystem access.
+  Selecting a folder replaces the active root without restarting the CLI:
+  the explorer tree, checked files, open panels, and any generated prompt
+  are all cleared and rebuilt against the new root. Canceling the dialog
+  leaves the current root untouched, and the previous root becomes
+  unreachable through every existing endpoint immediately. On a headless
+  Linux session with no `$DISPLAY`/`$WAYLAND_DISPLAY`, this is reported as a
+  distinct "no dialog available" outcome rather than a silent hang.
+- A small notification-dot badge on the Generate/Copy buttons: it lights up
+  on Generate when the composer's current inputs no longer match what was
+  last generated ("needs regenerating"), and on Copy once a freshly
+  generated prompt hasn't been copied yet ("needs copying"). Neither badge
+  depends on color alone — each also carries a text hint (`title`/
+  `aria-label`).
+- A successful "Copy prompt" click now nudges toward this tool's actual next
+  step: instead of the plain "Copied!", it reads "Copied! Paste it into your
+  sidebar AI." Every other copy action (file panel Copy, directory copy,
+  "Copy all checked") is unchanged.
+
+### Changed
+
+- The default Copy buttons ("Copy" on a file panel, "Copy all checked") now
+  name their output format explicitly — "Copy file as Markdown" / "Copy all
+  checked as Markdown" — matching the "⋯" menu's existing "Copy file as
+  {format}" phrasing instead of a bare, ambiguous "Copy".
+
 ## v0.2.0 — 2026-07-13
 
 ### Added
