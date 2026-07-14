@@ -231,6 +231,7 @@ const MESSAGES = {
     "file.loadFailed": "(failed to load: {err})",
     "file.loadFailedHttp": "(failed to load: HTTP {status})",
     "copy.copied": "Copied!",
+    "composer.copiedPasteHint": "Copied! Paste it into your sidebar AI.",
     "copy.failed": "Copy failed",
     "copy.moreOptions": "More copy options",
     "menu.copyFileAs": "Copy file as {format}",
@@ -409,6 +410,7 @@ const MESSAGES = {
     "file.loadFailed": "（読み込みに失敗しました: {err}）",
     "file.loadFailedHttp": "（読み込みに失敗しました: HTTP {status}）",
     "copy.copied": "コピーしました!",
+    "composer.copiedPasteHint": "コピーしました。サイドバーAIに貼り付けを。",
     "copy.failed": "コピー失敗",
     "copy.moreOptions": "その他のコピー方法",
     "menu.copyFileAs": "ファイルを {format} でコピー",
@@ -2188,10 +2190,17 @@ function showCopyToast(ok, error) {
 /** Shows a transient "Copied!"/"Copy failed" label on `button`, reverting to
  * its original label after `COPY_FEEDBACK_MS` -- the same fade-back shape as
  * `flashHighlight`'s `.nav-flash` cue (issue #5), just on a button's text
- * instead of an outline. The button is disabled for the duration so a second
- * click can't pile up overlapping reverts; on failure, `error` is surfaced
+ * instead of an outline. `el.promptCopy` is the one exception: on success it
+ * gets `composer.copiedPasteHint` instead of the plain `copy.copied` label,
+ * nudging the user toward this tool's actual next step -- switching to their
+ * sidebar AI and pasting (issue #48). Every other copy affordance (file
+ * panel Copy, directory copy, "Copy all checked") keeps the plain label,
+ * since their output isn't necessarily headed to a sidebar AI. The button is
+ * disabled for the duration so a second click can't pile up overlapping
+ * reverts; on failure, `error` is surfaced
  * via the button's `title` tooltip, since the label itself only has room for
- * a short word.
+ * a short word -- except `el.promptCopy`'s own longer success hint above,
+ * which trades that button-width economy for the issue #48 nudge.
  *
  * A multi-file copy re-fetches every file before writing to the clipboard
  * (`fetchFileContents`), which can take long enough for the user to trigger a
@@ -2225,7 +2234,11 @@ export function flashCopyFeedback(button, ok, error) {
   const originalLabel = button.dataset.copyOriginalLabel ?? button.textContent;
   button.dataset.copyOriginalLabel = originalLabel;
 
-  button.textContent = ok ? t("copy.copied") : t("copy.failed");
+  button.textContent = ok
+    ? button === el.promptCopy
+      ? t("composer.copiedPasteHint")
+      : t("copy.copied")
+    : t("copy.failed");
   button.classList.toggle("copy-success", ok);
   button.classList.toggle("copy-failure", !ok);
   button.title = ok ? "" : error || t("copy.failed");

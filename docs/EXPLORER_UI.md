@@ -318,7 +318,14 @@ either badge -- that's a different concept from a composer input changing
 this hand-edited" check the language switcher makes). Neither badge is
 color-only: "Generate prompt" carries its hint in a `title` tooltip, and
 "Copy prompt" carries its hint in `aria-label` (not `title`, which briefly
-belongs to the transient "Copied!"/"Copy failed" feedback instead).
+belongs to the transient "Copied!"/"Copy failed" feedback instead). A
+successful "Copy prompt" click is the one copy action in the app whose
+transient label differs from the rest: instead of the plain "Copied!" it
+reads "Copied! Paste it into your sidebar AI." (issue #48), nudging the user
+toward the tool's actual next step. Every other copy affordance in the app
+(file panel Copy, directory copy, "Copy all checked") keeps the plain
+"Copied!"/"Copy failed" pair, since their output isn't necessarily headed to
+a sidebar AI.
 
 "Excerpts"/"full file" context mode and target "diff" fetch their embedded
 content asynchronously, and a locale switch can also trigger a regenerate; if
