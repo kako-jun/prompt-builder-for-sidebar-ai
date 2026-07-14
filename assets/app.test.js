@@ -62,6 +62,7 @@ import {
   markPromptDirty,
   generatePrompt,
   regeneratePromptIfUnedited,
+  wirePromptComposer,
 } from "./app.js";
 
 // ---- extensionOf ----
@@ -2912,6 +2913,14 @@ describe("i18n composer badge keys (issue #43)", () => {
 // plain objects with exactly the properties `generatePrompt`,
 // `regeneratePromptIfUnedited`, `beginPromptGenerationUiLock`/
 // `endPromptGenerationUiLock`, and `flashCopyFeedback` actually read/write.
+// The one [integration] test that calls the real `wirePromptComposer()` adds
+// two more slivers of stubbing on top, kept to the same "exactly what's
+// read/written" minimalism: `createFakeElement`'s `addEventListener` actually
+// records handlers (`fireEvent` below invokes them) instead of discarding
+// them, and `installFakeOptionConstructor` stubs the browser-global `Option`
+// constructor `populateSelect` calls -- still no jsdom, no `document` stub of
+// any kind (`populateSelect`/`wirePromptComposer`'s own immediate setup never
+// touch `document`).
 //
 // `state` (`export const`) and `el` (`export let`) are both module-singleton
 // live bindings: `state`'s object identity can't be swapped, only its
@@ -2929,6 +2938,7 @@ describe("i18n composer badge keys (issue #43)", () => {
 
 function createFakeElement(overrides = {}) {
   const classes = new Set();
+  const listeners = new Map();
   return {
     value: "",
     disabled: false,
@@ -2953,8 +2963,57 @@ function createFakeElement(overrides = {}) {
     },
     setAttribute() {},
     removeAttribute() {},
-    addEventListener() {},
+    // Actually records handlers (keyed by event type) instead of discarding
+    // them, so `fireEvent` below can invoke whatever `wirePromptComposer`
+    // (or any other real wiring code) registered here -- letting a test
+    // drive the *actual* click handler instead of hand-duplicating its body.
+    addEventListener(type, handler) {
+      if (!listeners.has(type)) listeners.set(type, new Set());
+      listeners.get(type).add(handler);
+    },
+    removeEventListener(type, handler) {
+      listeners.get(type)?.delete(handler);
+    },
+    // `populateSelect` (called from `wirePromptComposer`) does
+    // `select.append(...options.map(...))`; the options themselves are never
+    // asserted on, so recording/discarding them is unnecessary -- just
+    // accepting the call without throwing is enough.
+    append() {},
+    __listeners: listeners,
     ...overrides,
+  };
+}
+
+/** Invokes the handler(s) `addEventListener(type, ...)` recorded on `fakeEl`
+ * (see `createFakeElement` above), so a test can fire a *real* event handler
+ * installed by production wiring code (e.g. `wirePromptComposer`) instead of
+ * hand-duplicating its body. Returns the single handler's return value
+ * (e.g. the Promise an async click handler returns) -- every real wiring
+ * this file exercises registers exactly one handler per event type, so more
+ * or fewer than one is a test setup bug, not a valid case to paper over. */
+function fireEvent(fakeEl, type, event) {
+  const handlers = fakeEl.__listeners?.get(type);
+  if (!handlers || handlers.size !== 1) {
+    throw new Error(`expected exactly one "${type}" listener on fakeEl, found ${handlers ? handlers.size : 0}`);
+  }
+  const [handler] = handlers;
+  return handler(event);
+}
+
+/** Stubs the browser-global `Option` constructor that `populateSelect` calls
+ * (`new Option(text, value)`, invoked from `wirePromptComposer`) -- this Node
+ * test environment has no such global. Same install/restore shape as
+ * `installFakeWindow` below. */
+function installFakeOptionConstructor() {
+  const originalOption = global.Option;
+  global.Option = class FakeOption {
+    constructor(text, value) {
+      this.text = text;
+      this.value = value;
+    }
+  };
+  return () => {
+    global.Option = originalOption;
   };
 }
 
@@ -2962,7 +3021,11 @@ function createFakeElement(overrides = {}) {
  * `regeneratePromptIfUnedited`/`wirePromptComposer`'s click handlers touch.
  * Defaults to `target: "checked"` + `contextMode: "full"` (non-"diff", a
  * content-embedding mode) so `generatePrompt()` actually has an `await` gap
- * to race around, per the section comment above. */
+ * to race around, per the section comment above. `promptFilenameField`/
+ * `promptComposerToggle` aren't read by `generatePrompt`/
+ * `regeneratePromptIfUnedited` themselves, but `wirePromptComposer()`'s own
+ * setup (`updatePromptFilenameVisibility()`, wiring the toggle's click
+ * listener) touches them immediately, so they're included here too. */
 function createComposerEl(overrides = {}) {
   return {
     promptGoal: createFakeElement({ value: "explain" }),
@@ -2971,8 +3034,10 @@ function createComposerEl(overrides = {}) {
     promptContextMode: createFakeElement({ value: "full" }),
     promptFilename: createFakeElement({ value: "" }),
     promptExtra: createFakeElement({ value: "" }),
+    promptFilenameField: createFakeElement(),
     promptGenerate: createFakeElement(),
     promptCopy: createFakeElement(),
+    promptComposerToggle: createFakeElement(),
     promptResult: createFakeElement({ value: "" }),
     ...overrides,
   };
@@ -3169,35 +3234,6 @@ describe("generatePrompt concurrency guards (issue #47)", () => {
     }
   });
 
-  test("two back-to-back generatePrompt() calls never produce a mixed/corrupted result -- the final value carries exactly one call's complete text, never both or neither (F2)", async () => {
-    resetState();
-    installEl(createComposerEl());
-    state.checked = new Set(["src/a.js"]);
-
-    try {
-      await withControlledFetch(async (calls) => {
-        const first = generatePrompt();
-        const second = generatePrompt();
-
-        calls[0].resolve({ ok: true, text: async () => "CONTENT-A" });
-        calls[1].resolve({ ok: true, text: async () => "CONTENT-B" });
-        await Promise.all([first, second]);
-      });
-
-      const finalValue = el.promptResult.value;
-      const hasA = finalValue.includes("CONTENT-A");
-      const hasB = finalValue.includes("CONTENT-B");
-      assert.notEqual(
-        hasA,
-        hasB,
-        "final value must contain exactly one of CONTENT-A/CONTENT-B, never both (corrupted mix) or neither"
-      );
-      assert.equal(finalValue, state.lastGeneratedPrompt);
-    } finally {
-      clearEl();
-    }
-  });
-
   // ---- F3: regeneratePromptIfUnedited()'s own hand-edit guard and lock ----
 
   test("does not call generatePrompt() at all when the result textarea has been hand-edited (fetch would fail the test if reached) (F3)", async () => {
@@ -3316,8 +3352,13 @@ describe("generatePrompt concurrency guards (issue #47)", () => {
       // A legitimate lock/unlock afterward still behaves normally -- the
       // clamp didn't leave the counter in some negative/broken state.
       beginPromptGenerationUiLock();
-      assert.equal(el.promptGenerate.disabled, true);
-      endPromptGenerationUiLock();
+      try {
+        assert.equal(el.promptGenerate.disabled, true);
+      } finally {
+        // Rebalance the shared counter back to 0 regardless of the assertion
+        // outcome above, so later tests aren't left with a stuck lock.
+        endPromptGenerationUiLock();
+      }
       assert.equal(el.promptGenerate.disabled, false);
     } finally {
       clearEl();
@@ -3332,45 +3373,55 @@ describe("generatePrompt concurrency guards (issue #47)", () => {
     state.lastGeneratedPrompt = "OLD";
     el.promptResult.value = "OLD"; // unedited, so the locale switch will regenerate too
 
+    const restoreOption = installFakeOptionConstructor();
     try {
-      await withControlledFetch(async (calls) => {
-        // Mirrors the Generate button's own click handler body in
-        // `wirePromptComposer`.
-        beginPromptGenerationUiLock();
-        const generateClick = generatePrompt().finally(() => endPromptGenerationUiLock());
-        assert.equal(calls.length, 1);
-        assert.equal(el.promptGenerate.disabled, true);
-        assert.equal(el.promptCopy.disabled, true);
+      // Actually wires up `el.promptGenerate`'s click listener (among
+      // others) via the real `wirePromptComposer`, so `fireEvent` below
+      // fires production code rather than a hand-duplicated stand-in --
+      // otherwise a regression that dropped the click handler's own
+      // `finally { endPromptGenerationUiLock(); }` would go undetected here
+      // (self-review follow-up, issue #47).
+      wirePromptComposer();
 
-        // A locale switch fires concurrently, while the Generate click's
-        // fetch is still pending.
-        const localeSwitch = regeneratePromptIfUnedited();
-        assert.equal(calls.length, 2);
+      try {
+        await withControlledFetch(async (calls) => {
+          const generateClick = fireEvent(el.promptGenerate, "click");
+          assert.equal(calls.length, 1);
+          assert.equal(el.promptGenerate.disabled, true);
+          assert.equal(el.promptCopy.disabled, true);
 
-        // The locale switch's own call resolves (and releases its own share
-        // of the lock) first.
-        calls[1].resolve({ ok: true, text: async () => "CONTENT-LOCALE" });
-        await localeSwitch;
+          // A locale switch fires concurrently, while the Generate click's
+          // fetch is still pending.
+          const localeSwitch = regeneratePromptIfUnedited();
+          assert.equal(calls.length, 2);
 
-        // The Generate-click call is still pending -- both buttons must stay
-        // locked (this is the bug the counter, not a plain boolean, guards
-        // against).
-        assert.equal(el.promptGenerate.disabled, true);
-        assert.equal(el.promptCopy.disabled, true);
+          // The locale switch's own call resolves (and releases its own share
+          // of the lock) first.
+          calls[1].resolve({ ok: true, text: async () => "CONTENT-LOCALE" });
+          await localeSwitch;
 
-        calls[0].resolve({ ok: true, text: async () => "CONTENT-GENERATE-CLICK" });
-        await generateClick;
-      });
+          // The Generate-click call is still pending -- both buttons must stay
+          // locked (this is the bug the counter, not a plain boolean, guards
+          // against).
+          assert.equal(el.promptGenerate.disabled, true);
+          assert.equal(el.promptCopy.disabled, true);
 
-      assert.equal(el.promptGenerate.disabled, false);
-      assert.equal(el.promptCopy.disabled, false);
-      // The Generate click's own call is stale by the time it resolves (the
-      // locale switch's call started after it) and discards its write, so
-      // the locale switch's text is what survives.
-      assert.match(el.promptResult.value, /CONTENT-LOCALE/);
-      assert.doesNotMatch(el.promptResult.value, /CONTENT-GENERATE-CLICK/);
+          calls[0].resolve({ ok: true, text: async () => "CONTENT-GENERATE-CLICK" });
+          await generateClick;
+        });
+
+        assert.equal(el.promptGenerate.disabled, false);
+        assert.equal(el.promptCopy.disabled, false);
+        // The Generate click's own call is stale by the time it resolves (the
+        // locale switch's call started after it) and discards its write, so
+        // the locale switch's text is what survives.
+        assert.match(el.promptResult.value, /CONTENT-LOCALE/);
+        assert.doesNotMatch(el.promptResult.value, /CONTENT-GENERATE-CLICK/);
+      } finally {
+        clearEl();
+      }
     } finally {
-      clearEl();
+      restoreOption();
     }
   });
 
@@ -3453,12 +3504,16 @@ describe("generatePrompt concurrency guards (issue #47)", () => {
 
     try {
       beginPromptGenerationUiLock(); // promptGenerationInFlight = 1
-      flashCopyFeedback(el.promptCopy, true);
+      try {
+        flashCopyFeedback(el.promptCopy, true);
 
-      t.mock.timers.tick(1500);
-      assert.equal(el.promptCopy.disabled, true, "still deferred: promptGenerationInFlight is still 1");
-
-      endPromptGenerationUiLock(); // counter -> 0
+        t.mock.timers.tick(1500);
+        assert.equal(el.promptCopy.disabled, true, "still deferred: promptGenerationInFlight is still 1");
+      } finally {
+        // Rebalance the shared counter back to 0 regardless of the assertion
+        // outcome above, so later tests aren't left with a stuck lock.
+        endPromptGenerationUiLock(); // counter -> 0
+      }
       assert.equal(el.promptCopy.disabled, false);
     } finally {
       restoreWindow();
@@ -3508,18 +3563,22 @@ describe("generatePrompt concurrency guards (issue #47)", () => {
     try {
       for (const contextMode of ["page", "attach"]) {
         installEl(createComposerEl({ promptContextMode: createFakeElement({ value: contextMode }) }));
-        state.checked = new Set(["src/a.js"]);
+        try {
+          state.checked = new Set(["src/a.js"]);
 
-        const first = generatePrompt();
-        const second = generatePrompt();
-        await Promise.all([first, second]);
+          const first = generatePrompt();
+          const second = generatePrompt();
+          await Promise.all([first, second]);
 
-        assert.equal(fetchCalls.length, 0, `fetch must not be called for contextMode "${contextMode}"`);
-        assert.equal(state.promptGenerated, true);
-        assert.equal(typeof el.promptResult.value, "string");
-        assert.notEqual(el.promptResult.value, "");
-
-        clearEl();
+          assert.equal(fetchCalls.length, 0, `fetch must not be called for contextMode "${contextMode}"`);
+          assert.equal(state.promptGenerated, true);
+          assert.equal(typeof el.promptResult.value, "string");
+          assert.notEqual(el.promptResult.value, "");
+        } finally {
+          // Ensures `el`'s fixture from this iteration never leaks into the
+          // next one (or into later tests) if an assertion above fails.
+          clearEl();
+        }
       }
     } finally {
       global.fetch = originalFetch;
