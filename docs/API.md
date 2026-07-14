@@ -66,6 +66,40 @@ file's diff to silently disappear from the response. See `src/diff.rs` for
 the exact command sequence and edge cases (modified/added/deleted/untracked
 files, an empty repository, a non-Git directory).
 
+`POST /{token}/api/open-folder` (issue #11) shows a native folder-selection
+dialog from the local backend and, if the user picks a folder, replaces the
+selected root with it -- see `src/lib.rs`'s `serve_open_folder`/
+`OpenFolderResponse` for the full doc comments this section summarizes.
+Every outcome is a `200`/`400`/`501` JSON body of the shape `{ available,
+status, basename?, absolutePath?, message? }`, never a bare non-2xx with no
+body, since a native dialog's "nothing selected" can mean either "cancelled"
+or "no dialog could be shown at all" and those need to be told apart:
+
+- No windowing system available (Linux only, neither `$DISPLAY` nor
+  `$WAYLAND_DISPLAY` set): `501`, `{ "available": false, "status":
+  "unavailable" }`. The dialog is never even attempted in this case.
+- Dialog shown, user cancelled: `200`, `{ "available": true, "status":
+  "cancelled" }`. The root is untouched.
+- Dialog shown, user picked something that fails the same [`resolve_root`]
+  validation every `ROOT` argument goes through (removed between the pick
+  and the check, or not a directory): `400`, `{ "available": true, "status":
+  "error", "message": "..." }`. The root is untouched.
+- Dialog shown, user picked a valid folder: `200`, `{ "available": true,
+  "status": "ok", "basename": "...", "absolutePath": "..." }` -- same shape
+  `api/root` returns. The root is swapped immediately: every other endpoint
+  picks up the new root on its very next request, the previous root becomes
+  unreachable through this session, and a GitHub-URL session's temporary
+  clone (if any) is deleted right away rather than waiting for the process
+  to exit. All of the same protections apply to the new root as to the one
+  the process started with -- parent-directory traversal, symlink refusal,
+  the resource-exhaustion caps -- since it goes through the identical
+  `resolve_root`/`discover_tree`/`resolve_regular_file` code paths.
+
+Only `POST` is accepted; a `GET` returns `405` like every other endpoint's
+wrong-method case. Uses the native dialog crate
+[`rfd`](https://docs.rs/rfd), invoked inside `tokio::task::spawn_blocking`
+since `pick_folder` is a synchronous, blocking call.
+
 ## What is excluded
 
 - Anything matched by a `.gitignore` in the tree, respected regardless of
@@ -119,6 +153,10 @@ extension-less SSH key names (`id_rsa`, `id_ed25519`, ...), `.npmrc`, and
   untracked) file doesn't show up in the untracked-file listing either --
   the change would be silently missing from the diff until after the first
   commit.
+- `api/open-folder`'s "unavailable" check only covers Linux (`$DISPLAY`/
+  `$WAYLAND_DISPLAY` both unset); macOS and Windows are assumed to always
+  have a windowing system available to a foreground GUI process, so no
+  equivalent check runs there.
 - Untracked-file diffing shells out to `git diff --no-index -- /dev/null
   <path>`, which assumes a Unix-like environment (the rest of this codebase
   makes the same implicit assumption already -- there is no Windows CI

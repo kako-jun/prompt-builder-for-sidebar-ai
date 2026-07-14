@@ -75,13 +75,31 @@ surface as the same clone error (git's own message is included). The
 temporary clone is removed automatically when the server exits, including
 after Ctrl+C.
 
+### Opening another folder
+
+The **Open another folder** button next to the root name shows a native
+folder-selection dialog from the local backend -- the browser itself is
+never given arbitrary filesystem access. Confirming a folder in that dialog
+is the confirmation; there is no separate in-page "are you sure" step.
+Canceling the dialog leaves the current root untouched. Picking a folder
+replaces the explorer root (rebuilding the tree and clearing every checked
+file, open panel, and generated prompt from the previous root -- none of it
+stays reachable through the running session afterwards) and, if the session
+was started from a GitHub URL, discards the now-unused temporary clone
+immediately rather than waiting for the process to exit.
+
+This relies on a native dialog crate ([`rfd`](https://docs.rs/rfd)), which
+needs a running desktop session. On Linux specifically, with neither
+`$DISPLAY` nor `$WAYLAND_DISPLAY` set (an SSH session with no X11
+forwarding, a headless server, ...) there is no windowing system to show a
+dialog in at all; the button reports this plainly instead of silently doing
+nothing, and the workaround is the same as always -- start a new instance
+with a different `ROOT` argument.
+
 ## Limitations
 
 This is an MVP; the current scope is intentionally narrow:
 
-- **One root per session.** The `ROOT` you launch with is fixed for that
-  server's lifetime -- there's no in-app way to switch to a different
-  folder yet. Start a new instance to browse somewhere else.
 - **File and line-range references only** (`@file:...`, `@dir:...`,
   `@lines:...`). Symbol-level references (`@symbol:...`, e.g. "this
   function") aren't implemented.
@@ -124,6 +142,11 @@ This is an MVP; the current scope is intentionally narrow:
   it's applied the same way `git` itself would exclude paths. Binary files
   (detected heuristically) and files over the size cap are excluded too;
   see [docs/API.md](docs/API.md).
+- **"Open another folder" says no dialog is available.** This happens on
+  Linux when neither `$DISPLAY` nor `$WAYLAND_DISPLAY` is set (e.g. an SSH
+  session with no X11 forwarding, a headless server) -- there's no
+  windowing system to show a folder-picker dialog in. Start a new instance
+  with a different `ROOT` argument instead.
 
 ## Documentation
 
