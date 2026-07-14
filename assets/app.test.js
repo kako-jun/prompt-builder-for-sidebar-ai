@@ -3757,9 +3757,13 @@ describe("resetExplorerStateForNewRoot() / openAnotherFolder() (issue #11 should
     // Node has no ambient `localStorage` (confirmed: a bare reference throws
     // `ReferenceError`), so `loadRecent`/`saveRecent`'s own try/catch would
     // silently no-op without this -- same reason `withStorage` exists for
-    // the security-notice tests above. Seeded with a non-empty list so
-    // "cleared" is actually observable (an already-empty list clearing to
-    // empty would pass vacuously).
+    // the security-notice tests above. `getItem` is a static stub (it keeps
+    // returning this same seeded list even after `setItem` runs, so this
+    // does not exercise `renderRecentList()`'s empty-state rendering) --
+    // only the `setItemCalls` assertion below is what this test checks.
+    // Seeded non-empty so that assertion is meaningful: a `clearRecent()`
+    // that regressed into a no-op saving the list unchanged would still
+    // write `"[]"` if the seed were already empty, passing vacuously.
     const storage = {
       getItem: () => JSON.stringify(["a.txt", "b.txt"]),
       setItem: (...args) => setItemCalls.push(args),
