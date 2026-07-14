@@ -48,6 +48,7 @@ import {
   formatWithThousandsSeparator,
   formatSelectionStats,
   tr,
+  t,
   substituteParams,
   detectInitialLocale,
   loadSecurityNoticeDismissed,
@@ -63,6 +64,8 @@ import {
   generatePrompt,
   regeneratePromptIfUnedited,
   wirePromptComposer,
+  resetExplorerStateForNewRoot,
+  openAnotherFolder,
 } from "./app.js";
 
 // ---- extensionOf ----
@@ -3582,6 +3585,284 @@ describe("generatePrompt concurrency guards (issue #47)", () => {
       }
     } finally {
       global.fetch = originalFetch;
+    }
+  });
+});
+
+// ---- resetExplorerStateForNewRoot() / openAnotherFolder() (issue #11 should-fix) ----
+//
+// Same hand-rolled-stub philosophy as the generatePrompt concurrency guards
+// section above, extended with a tiny fake `document` (`createFakeDomNode`/
+// `installFakeDocument`) -- `resetExplorerStateForNewRoot()` unconditionally
+// calls the real `renderFilePanels()`/`clearRecent()`, and that real
+// rendering code (`buildCopyActionGroup`, `renderRecentList`) calls
+// `document.createElement` regardless of how empty `state`/the recent list
+// are. Still no jsdom: just enough of a DOM-node shape (`className`-backed
+// `classList`, a plain mutable `style`, `appendChild`, a settable
+// `innerHTML`, and a single-level-selector `querySelector`, the only DOM
+// query this code path actually performs) for those functions' real calls to
+// succeed without throwing.
+
+function createFakeDomNode(tagName) {
+  const children = [];
+  const node = {
+    tagName,
+    className: "",
+    style: {},
+    dataset: {},
+    textContent: "",
+    title: "",
+    disabled: false,
+    hidden: false,
+    classList: {
+      contains(name) {
+        return node.className.split(/\s+/).filter(Boolean).includes(name);
+      },
+      toggle(name, force) {
+        const list = node.className.split(/\s+/).filter(Boolean);
+        const has = list.includes(name);
+        const shouldAdd = force === undefined ? !has : Boolean(force);
+        if (shouldAdd && !has) list.push(name);
+        if (!shouldAdd && has) list.splice(list.indexOf(name), 1);
+        node.className = list.join(" ");
+        return shouldAdd;
+      },
+      add(...names) {
+        const list = node.className.split(/\s+/).filter(Boolean);
+        for (const name of names) if (!list.includes(name)) list.push(name);
+        node.className = list.join(" ");
+      },
+      remove(...names) {
+        const list = node.className.split(/\s+/).filter(Boolean);
+        node.className = list.filter((name) => !names.includes(name)).join(" ");
+      },
+    },
+    setAttribute() {},
+    removeAttribute() {},
+    addEventListener() {},
+    removeEventListener() {},
+    appendChild(child) {
+      children.push(child);
+      return child;
+    },
+    set innerHTML(_value) {
+      children.length = 0;
+    },
+    get innerHTML() {
+      return "";
+    },
+    // Only ever called as `wrap.querySelector(".copy-button-primary")`
+    // (`renderContentToolbar`, on the group `buildCopyActionGroup` just
+    // returned) -- a same-level class match is enough, recursing into
+    // children only because it costs nothing to be a little more general.
+    querySelector(selector) {
+      const cls = selector.startsWith(".") ? selector.slice(1) : selector;
+      for (const child of children) {
+        if (child.classList && child.classList.contains(cls)) return child;
+        if (typeof child.querySelector === "function") {
+          const nested = child.querySelector(selector);
+          if (nested) return nested;
+        }
+      }
+      return null;
+    },
+  };
+  return node;
+}
+
+/** Installs a minimal fake `document` (just `createElement`/`createElementNS`,
+ * both returning `createFakeDomNode` instances) for the duration of a test,
+ * restoring whatever `globalThis.document` was beforehand -- same
+ * install/restore shape as `installFakeWindow`/`withStorage` above. */
+function installFakeDocument() {
+  const had = Object.getOwnPropertyDescriptor(globalThis, "document");
+  globalThis.document = {
+    createElement: (tag) => createFakeDomNode(tag),
+    createElementNS: (_ns, tag) => createFakeDomNode(tag),
+  };
+  return () => {
+    if (had) Object.defineProperty(globalThis, "document", had);
+    else delete globalThis.document;
+  };
+}
+
+/** `el` fixture covering every property `resetExplorerStateForNewRoot()`/
+ * `openAnotherFolder()` touch beyond the composer fields `createComposerEl()`
+ * above already covers (`promptGenerate`/`promptCopy`/`promptResult`, all
+ * touched via `markPromptDirty()`). `treeRoot` is only exercised once
+ * `openAnotherFolder()`'s "ok" path's `loadTree()` reaches its own
+ * catch/error-response branch. */
+function createExplorerEl(overrides = {}) {
+  return {
+    openFolderButton: createFakeElement(),
+    openFolderStatus: createFakeElement({ hidden: true, textContent: "" }),
+    filePanels: createFakeDomNode("div"),
+    contentEmptyHint: createFakeDomNode("div"),
+    contentToolbarStats: createFakeElement(),
+    contentToolbarActions: createFakeDomNode("div"),
+    recentList: createFakeDomNode("ul"),
+    treeRoot: createFakeDomNode("div"),
+    ...overrides,
+  };
+}
+
+describe("resetExplorerStateForNewRoot() / openAnotherFolder() (issue #11 should-fix)", () => {
+  test("resetExplorerStateForNewRoot() clears every piece of state tied to the previous root", () => {
+    resetState();
+    installEl({ ...createComposerEl(), ...createExplorerEl() });
+    const restoreDoc = installFakeDocument();
+
+    state.checked = new Set(["a.txt"]);
+    state.lineSelections = new Map([["a.txt", { anchor: 1, start: 1, end: 2 }]]);
+    state.fileContentCache = new Map([["a.txt", "cached content"]]);
+    state.collapsedPanels = new Set(["a.txt"]);
+    state.openFiles = ["a.txt"];
+    state.expandedDirs = new Set(["dir"]);
+    state.entries = [{ path: "a.txt", is_dir: false, likely_secret: false }];
+    state.nodesByPath = new Map([["a.txt", {}]]);
+    state.rootNode = { path: "", isDir: true, children: new Map() };
+    state.lastGeneratedPrompt = "PREVIOUS PROMPT";
+    state.promptGenerated = true;
+    state.treeLoadError = { key: "tree.loadFailed", params: null };
+    state.rootLoadError = { key: "root.loadFailed", params: null };
+    el.promptResult.value = "PREVIOUS PROMPT";
+
+    try {
+      resetExplorerStateForNewRoot();
+
+      assert.equal(state.checked.size, 0);
+      assert.equal(state.lineSelections.size, 0);
+      assert.equal(state.fileContentCache.size, 0);
+      assert.equal(state.collapsedPanels.size, 0);
+      assert.deepEqual(state.openFiles, []);
+      assert.equal(state.expandedDirs.size, 0);
+      assert.deepEqual(state.entries, []);
+      assert.equal(state.nodesByPath.size, 0);
+      assert.equal(state.rootNode, null);
+      assert.equal(state.lastGeneratedPrompt, "");
+      assert.equal(state.promptGenerated, false);
+      assert.equal(state.treeLoadError, null);
+      assert.equal(state.rootLoadError, null);
+      assert.equal(el.promptResult.value, "");
+    } finally {
+      clearEl();
+      restoreDoc();
+    }
+  });
+
+  test("resetExplorerStateForNewRoot() clears the recently-opened-files list via clearRecent()", () => {
+    installEl({ ...createComposerEl(), ...createExplorerEl() });
+    const restoreDoc = installFakeDocument();
+    const setItemCalls = [];
+    // Node has no ambient `localStorage` (confirmed: a bare reference throws
+    // `ReferenceError`), so `loadRecent`/`saveRecent`'s own try/catch would
+    // silently no-op without this -- same reason `withStorage` exists for
+    // the security-notice tests above. Seeded with a non-empty list so
+    // "cleared" is actually observable (an already-empty list clearing to
+    // empty would pass vacuously).
+    const storage = {
+      getItem: () => JSON.stringify(["a.txt", "b.txt"]),
+      setItem: (...args) => setItemCalls.push(args),
+    };
+
+    try {
+      withStorage(storage, () => resetExplorerStateForNewRoot());
+      // "promptBuilder.recentFiles" mirrors app.js's own module-private
+      // RECENT_STORAGE_KEY constant (not exported) -- same pattern as the
+      // saveSecurityNoticeDismissed tests above matching its literal key.
+      assert.deepEqual(setItemCalls, [["promptBuilder.recentFiles", "[]"]]);
+    } finally {
+      clearEl();
+      restoreDoc();
+    }
+  });
+
+  test('openAnotherFolder(): a "cancelled" response leaves state untouched and shows no status message', async () => {
+    resetState();
+    installEl({ ...createComposerEl(), ...createExplorerEl() });
+    state.checked = new Set(["a.txt"]);
+    state.openFiles = ["a.txt"];
+
+    const originalFetch = global.fetch;
+    global.fetch = async () => ({ ok: true, json: async () => ({ status: "cancelled" }) });
+
+    try {
+      await openAnotherFolder();
+
+      assert.deepEqual(state.openFiles, ["a.txt"]);
+      assert.equal(state.checked.size, 1);
+      assert.equal(el.openFolderStatus.hidden, true);
+      assert.equal(el.openFolderStatus.textContent, "");
+      assert.equal(el.openFolderButton.disabled, false);
+    } finally {
+      global.fetch = originalFetch;
+      clearEl();
+    }
+  });
+
+  test('openAnotherFolder(): "unavailable"/"error" responses surface a message via el.openFolderStatus', async () => {
+    const cases = [
+      { response: { status: "unavailable" }, expected: () => t("openFolder.unavailable") },
+      {
+        response: { status: "error", message: "no longer exists" },
+        expected: () => t("openFolder.failed", { error: "no longer exists" }),
+      },
+    ];
+
+    for (const { response, expected } of cases) {
+      installEl({ ...createComposerEl(), ...createExplorerEl() });
+      const originalFetch = global.fetch;
+      global.fetch = async () => ({ ok: true, json: async () => response });
+
+      try {
+        await openAnotherFolder();
+
+        assert.equal(el.openFolderStatus.hidden, false);
+        assert.equal(el.openFolderStatus.textContent, expected());
+        assert.equal(el.openFolderButton.disabled, false);
+      } finally {
+        global.fetch = originalFetch;
+        clearEl();
+      }
+    }
+  });
+
+  test('openAnotherFolder(): an "ok" response resets explorer state and reloads the root/tree from the new root', async () => {
+    resetState();
+    installEl({ ...createComposerEl(), ...createExplorerEl() });
+    const restoreDoc = installFakeDocument();
+    state.checked = new Set(["old/a.txt"]);
+    state.openFiles = ["old/a.txt"];
+    state.collapsedPanels = new Set(["old/a.txt"]);
+
+    const calls = [];
+    const originalFetch = global.fetch;
+    global.fetch = async (url) => {
+      calls.push(String(url));
+      if (String(url).includes("/api/open-folder")) {
+        return { ok: true, json: async () => ({ status: "ok" }) };
+      }
+      // loadRoot()/loadTree() aren't the point of this test (per review: no
+      // need to deep-dive into them) -- a rejected fetch drives both
+      // straight into their own catch branches, which is enough to prove
+      // they were actually called, right after the reset, with the new
+      // root's endpoints.
+      throw new Error("network down");
+    };
+
+    try {
+      await openAnotherFolder();
+
+      assert.equal(state.checked.size, 0);
+      assert.deepEqual(state.openFiles, []);
+      assert.equal(state.collapsedPanels.size, 0);
+      assert.ok(calls.some((u) => u.includes("/api/open-folder")));
+      assert.ok(calls.some((u) => u.includes("/api/root")));
+      assert.ok(calls.some((u) => u.includes("/api/tree")));
+    } finally {
+      global.fetch = originalFetch;
+      clearEl();
+      restoreDoc();
     }
   });
 });

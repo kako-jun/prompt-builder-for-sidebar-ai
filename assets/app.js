@@ -670,7 +670,7 @@ function hideOpenFolderStatus() {
  * left alone: they describe how the user wants a prompt built, not which
  * files it's built from, so there's no reason a folder switch should reset
  * them. */
-function resetExplorerStateForNewRoot() {
+export function resetExplorerStateForNewRoot() {
   state.entries = [];
   state.rootNode = null;
   state.nodesByPath = new Map();
@@ -709,7 +709,7 @@ function resetExplorerStateForNewRoot() {
  *   reference, or generated prompt from the old root can survive the
  *   switch.
  */
-async function openAnotherFolder() {
+export async function openAnotherFolder() {
   if (!el.openFolderButton) return;
 
   el.openFolderButton.disabled = true;

@@ -83,9 +83,10 @@ never given arbitrary filesystem access. Confirming a folder in that dialog
 is the confirmation; there is no separate in-page "are you sure" step.
 Canceling the dialog leaves the current root untouched. Picking a folder
 replaces the explorer root (rebuilding the tree and clearing every checked
-file, open panel, and generated prompt from the previous root -- none of it
-stays reachable through the running session afterwards) and, if the session
-was started from a GitHub URL, discards the now-unused temporary clone
+file, open panel and its collapsed/cached state, the recently-opened-files
+list, and the generated prompt from the previous root -- none of it stays
+reachable through the running session afterwards) and, if the session was
+started from a GitHub URL, discards the now-unused temporary clone
 immediately rather than waiting for the process to exit.
 
 This relies on a native dialog crate ([`rfd`](https://docs.rs/rfd)), which

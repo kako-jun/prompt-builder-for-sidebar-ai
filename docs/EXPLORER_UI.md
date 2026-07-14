@@ -89,7 +89,8 @@ Three outcomes follow from the endpoint's JSON response:
   on a timer like the copy toast, since both messages can run long enough to
   need real reading time.
 - **A folder was picked and validated**: the tree, every checked file, every
-  open file panel and its cached content, per-file line selections, and the
+  open file panel and its cached content, per-panel collapsed state,
+  per-file line selections, the recently-opened-files list, and the
   generated prompt are all cleared (`resetExplorerStateForNewRoot` in
   app.js) before the root/tree are reloaded from the server -- nothing from
   the previous root survives the switch. Composer *settings* (goal, target,

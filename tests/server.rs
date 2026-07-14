@@ -1631,7 +1631,7 @@ async fn api_open_folder_symlink_escape_protection_applies_to_the_new_root() {
 #[tokio::test]
 async fn api_open_folder_drops_the_previous_root_guard_and_removes_its_temp_dir_on_switch() {
     // issue #11 should-fix: every existing test builds its session via
-    // `AppState::with_fakes`, which always starts `root_guard` at `None`, so
+    // `AppState::with_fakes_and_guard`, which always starts `root_guard` at `None`, so
     // no test could previously construct a session that already held a
     // guard -- meaning the "switching roots drops the *previous* root's
     // `TempDirGuard` immediately" behavior (documented in the `AppState`

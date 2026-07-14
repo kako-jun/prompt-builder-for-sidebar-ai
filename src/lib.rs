@@ -935,7 +935,7 @@ mod tests {
     }
 
     /// Issue #11 should-fix: every existing test reaches `AppState` through
-    /// `with_fakes`/`build_router_for_test`, which always inject a fake
+    /// `with_fakes_and_guard`/`build_router_for_test`, which always inject a fake
     /// `dialog_available` closure -- so the real, production
     /// `native_dialog_available` (the `$DISPLAY`/`$WAYLAND_DISPLAY` check
     /// used on Linux) was never exercised by any test at all; flipping its
