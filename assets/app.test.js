@@ -2909,6 +2909,26 @@ describe("i18n composer badge keys (issue #43)", () => {
   });
 });
 
+// ---- i18n: composer copy hint key (issue #48) ----
+
+describe("i18n composer copy hint key (issue #48)", () => {
+  const NEW_MESSAGE_KEYS = ["composer.copiedPasteHint"];
+
+  test("every new key resolves in both en and ja (no blank, no en fallback for ja)", () => {
+    for (const key of NEW_MESSAGE_KEYS) {
+      const en = tr("en", key);
+      const ja = tr("ja", key);
+      // A missing key would fall back to the key string itself.
+      assert.notEqual(en, key, `en missing ${key}`);
+      assert.notEqual(ja, key, `ja missing ${key}`);
+      assert.notEqual(en, "");
+      assert.notEqual(ja, "");
+      // A ja key that merely fell back to en would compare equal.
+      assert.notEqual(ja, en, `ja should differ from en for ${key}`);
+    }
+  });
+});
+
 // ---- generatePrompt() concurrency guards (issue #47) ----
 //
 // Hand-rolled DOM stubs in the same spirit as `writeRefToHash`'s `global.window`
@@ -3867,6 +3887,91 @@ describe("resetExplorerStateForNewRoot() / openAnotherFolder() (issue #11 should
       global.fetch = originalFetch;
       clearEl();
       restoreDoc();
+    }
+  });
+});
+
+// ---- flashCopyFeedback: composer copy hint (issue #48) ----
+//
+// `flashCopyFeedback`'s success branch special-cases `el.promptCopy`: instead
+// of the plain `copy.copied` label every other copy affordance gets, it shows
+// `composer.copiedPasteHint` -- a nudge toward this tool's actual next step,
+// switching to the sidebar AI and pasting. The failure branch (`copy.failed`)
+// and every non-`promptCopy` button are unchanged. These tests pin all three
+// branches plus the re-enable-timer revert, reusing the same
+// `createComposerEl`/`createFakeElement`/`installEl`/`clearEl`/
+// `installFakeWindow` fixtures the issue #47 section above defines.
+//
+// The mock-timer `TestContext` parameter is named `ctx` rather than the `t`
+// used elsewhere in this file, since `t` is now also the imported
+// `app.js` UI-translation helper (`t(key)` == `tr(getLocale(), key)`) these
+// tests call directly to compare against `button.textContent` -- reusing `t`
+// for the parameter would shadow that import inside the test body.
+
+describe("flashCopyFeedback — composer copy hint (issue #48)", () => {
+  test("el.promptCopy's success label is composer.copiedPasteHint, not copy.copied (issue #48)", (ctx) => {
+    installEl(createComposerEl());
+    const restoreWindow = installFakeWindow();
+    ctx.mock.timers.enable({ apis: ["setTimeout"] });
+
+    try {
+      flashCopyFeedback(el.promptCopy, true);
+      assert.equal(el.promptCopy.textContent, t("composer.copiedPasteHint"));
+      // Asserted both ways so an inverted branch (the bug this guards
+      // against) fails loudly either direction.
+      assert.notEqual(el.promptCopy.textContent, t("copy.copied"));
+    } finally {
+      restoreWindow();
+      clearEl();
+    }
+  });
+
+  test("a button other than el.promptCopy (e.g. a file panel's Copy button) still gets the plain copy.copied label on success", (ctx) => {
+    installEl(createComposerEl());
+    const restoreWindow = installFakeWindow();
+    ctx.mock.timers.enable({ apis: ["setTimeout"] });
+    const filePanelCopyButton = createFakeElement({ textContent: "Copy" });
+
+    try {
+      flashCopyFeedback(filePanelCopyButton, true);
+      assert.equal(filePanelCopyButton.textContent, t("copy.copied"));
+      assert.notEqual(filePanelCopyButton.textContent, t("composer.copiedPasteHint"));
+    } finally {
+      restoreWindow();
+      clearEl();
+    }
+  });
+
+  test("el.promptCopy's failure label is still copy.failed -- the new hint only applies on success", (ctx) => {
+    installEl(createComposerEl());
+    const restoreWindow = installFakeWindow();
+    ctx.mock.timers.enable({ apis: ["setTimeout"] });
+
+    try {
+      flashCopyFeedback(el.promptCopy, false, "clipboard denied");
+      assert.equal(el.promptCopy.textContent, t("copy.failed"));
+    } finally {
+      restoreWindow();
+      clearEl();
+    }
+  });
+
+  test("after the new hint is shown, flashCopyFeedback's timer still reverts el.promptCopy.textContent to its original label -- not to copy.copied and not stuck on the hint", (ctx) => {
+    installEl(createComposerEl());
+    const restoreWindow = installFakeWindow();
+    ctx.mock.timers.enable({ apis: ["setTimeout"] });
+
+    try {
+      el.promptCopy.textContent = "Copy prompt";
+      flashCopyFeedback(el.promptCopy, true);
+      assert.equal(el.promptCopy.textContent, t("composer.copiedPasteHint"));
+
+      ctx.mock.timers.tick(1500);
+
+      assert.equal(el.promptCopy.textContent, "Copy prompt");
+    } finally {
+      restoreWindow();
+      clearEl();
     }
   });
 });
